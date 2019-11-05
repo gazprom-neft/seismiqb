@@ -8,7 +8,7 @@ import segyio
 import cv2
 from scipy.signal import butter, lfilter, hilbert
 
-from ..batchflow import FilesIndex, Batch, acton, inbatch_parallel
+from ..batchflow import FilesIndex, Batch, action, inbatch_parallel, any_action_failed
 from ..batchflow.batch_image import transform_actions # pylint: disable=no-name-in-module,import-error
 from .utils import create_mask, aggregate, make_labels_dict, _get_horizons
 from .plot_utils import plot_batch_components
@@ -89,9 +89,13 @@ class SeismicCropBatch(Batch):
         labels = dict()
         labels_ = dict()
 
+        if any_action_failed(all_clouds):
+            raise IOError('Could not get labels:', all_clouds)
+
         # init labels-dict
         for ix in self.indices:
             labels_[self.unsalt(ix)] = set()
+
         for ix, cloud in zip(self.indices, all_clouds):
             labels_[self.unsalt(ix)] |= set(cloud.keys())
 
@@ -501,11 +505,16 @@ class SeismicCropBatch(Batch):
         i_shift, x_shift, h_shift = [self.get(ix, src_slices)[k][0] for k in range(3)]
         geom = self.get(ix, 'geometries')
         if coordinates == 'lines':
-            transforms = (lambda i_: geom.ilines[i_ + i_shift], lambda x_: geom.xlines[x_ + x_shift],
-                          lambda h_: h_ + h_shift)
-        else:
+            try:
+                transforms = (lambda i_: geom.ilines[i_ + i_shift], lambda x_: geom.xlines[x_ + x_shift],
+                              lambda h_: h_ + h_shift)
+            except Exception as e:
+                print(i_shift, x_shift, h_shift)
+        elif coordinates == 'cubic':
             transforms = (lambda i_: i_ + i_shift, lambda x_: x_ + x_shift,
                           lambda h_: h_ + h_shift)
+        else:
+            transforms = [lambda x: x for _ in range(3)]
 
         return _get_horizons(mask, threshold, averaging, transforms, separate=False)
 

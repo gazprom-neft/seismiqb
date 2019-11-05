@@ -328,9 +328,25 @@ def _get_horizons(mask, threshold, averaging, transforms, separate=False):
         heights = horizon_.values
 
         # transform each column
-        ilines_ = transforms[0](ilines)
-        xlines_ = transforms[1](xlines)
-        heights_ = np.ravel(transforms[2](heights))
+        try:
+            ilines_ = transforms[0](ilines)
+        except Exception as e:
+            print('ilines ', ilines, transforms[0](0))
+            raise e
+        try:
+            xlines_ = transforms[1](xlines)
+        except Exception as e:
+            print('xlines_ ', xlines, transforms[0](0))
+            raise e
+
+        try:
+            heights_ = np.ravel(transforms[2](heights))
+        except Exception as e:
+            print('heights_ ', heights, transforms[2](0))
+            raise e
+
+#         xlines_ = transforms[1](xlines)
+#         heights_ = np.ravel(transforms[2](heights))
 
         if separate:
             for key, h in zip(zip(ilines_, xlines_), heights_):
