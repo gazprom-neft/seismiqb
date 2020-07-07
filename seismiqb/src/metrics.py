@@ -994,7 +994,7 @@ def apply_local_func(compute_func, reduce_func, data, bad_traces, kernel_size):
 
 
 def compute_support_func(function_ndarray, function_str, name,
-                         data, supports, bad_traces, safe_strip=0, line_no=None, **kwargs):
+                         data, supports, bad_traces, safe_strip=0, line_no=None, random=True, **kwargs):
     """ Apply function to compare each trace and a number of support traces.
 
     Parameters
@@ -1023,14 +1023,18 @@ def compute_support_func(function_ndarray, function_str, name,
 
     if isinstance(supports, (int, tuple, list, np.ndarray)):
         if isinstance(supports, int):
-            title = f'{name} with {supports} random supports'
+            mode = 'random' if random else 'fixed'
+            title = f'{name} with {supports} {mode} supports'
             if safe_strip:
                 bad_traces[:, :safe_strip], bad_traces[:, -safe_strip:] = 1, 1
                 bad_traces[:safe_strip, :], bad_traces[-safe_strip:, :] = 1, 1
 
             np.random.seed(0)
             non_zero_traces = np.where(bad_traces == 0)
-            indices = np.random.choice(len(non_zero_traces[0]), supports)
+            if random:
+                indices = np.random.choice(len(non_zero_traces[0]), supports)
+            else:
+                indices = np.arange(0, len(non_zero_traces[0]), len(non_zero_traces[0]) // supports)[:supports]
             supports = np.array([non_zero_traces[0][indices], non_zero_traces[1][indices]]).T
 
         elif isinstance(supports, (tuple, list, np.ndarray)):
@@ -1072,13 +1076,13 @@ def _compute_local_corrs(array_1, array_2):
     return result / len(array_1)
 
 
-def compute_support_corrs(data, supports, bad_traces, safe_strip=0, line_no=None, **kwargs):
+def compute_support_corrs(data, supports, bad_traces, safe_strip=0, line_no=None, random=True, **kwargs):
     #pylint: disable=missing-function-docstring
     return compute_support_func(function_ndarray=_compute_support_corrs,
                                 function_str=_compute_line_corrs,
                                 name='correlation',
                                 data=data, supports=supports, bad_traces=bad_traces,
-                                safe_strip=safe_strip, line_no=line_no, **kwargs)
+                                safe_strip=safe_strip, line_no=line_no, random=random, **kwargs)
 
 def _compute_support_corrs(data, supports, bad_traces):
     n_supports = len(supports)
@@ -1143,13 +1147,13 @@ def _compute_local_crosscorrs(array_1, array_2):
     return np.argmax(temp)
 
 
-def compute_support_crosscorrs(data, supports, bad_traces, safe_strip=0, **kwargs):
+def compute_support_crosscorrs(data, supports, bad_traces, safe_strip=0, random=True, **kwargs):
     #pylint: disable=missing-function-docstring
     return compute_support_func(function_ndarray=_compute_support_crosscorrs,
                                 function_str=None,
                                 name='Cross-correlation',
                                 data=data, supports=supports, bad_traces=bad_traces,
-                                safe_strip=safe_strip, **kwargs)
+                                safe_strip=safe_strip, random=random, **kwargs)
 
 def _compute_support_crosscorrs(data, supports, bad_traces):
     n_supports = len(supports)
@@ -1184,13 +1188,13 @@ def _compute_local_btch(array_1, array_2):
     return np.sum(np.sqrt(array_1 * array_2))
 
 
-def compute_support_btch(data, supports, bad_traces, safe_strip=0, **kwargs):
+def compute_support_btch(data, supports, bad_traces, safe_strip=0, random=True, **kwargs):
     #pylint: disable=missing-function-docstring
     return compute_support_func(function_ndarray=_compute_support_btch,
                                 function_str=None,
                                 name='Bhattacharyya-divergence',
                                 data=data, supports=supports, bad_traces=bad_traces,
-                                safe_strip=safe_strip, **kwargs)
+                                safe_strip=safe_strip, random=random, **kwargs)
 
 def _compute_support_btch(data, supports, bad_traces):
     n_supports = len(supports)
@@ -1221,13 +1225,13 @@ def _compute_local_kl(array_1, array_2):
     return 1 - np.sum(array_1 * np.log2(array_1 / array_2))
 
 
-def compute_support_kl(data, supports, bad_traces, safe_strip=0, **kwargs):
+def compute_support_kl(data, supports, bad_traces, safe_strip=0, random=True, **kwargs):
     #pylint: disable=missing-function-docstring
     return compute_support_func(function_ndarray=_compute_support_kl,
                                 function_str=None,
                                 name='KL-divergence',
                                 data=data, supports=supports, bad_traces=bad_traces,
-                                safe_strip=safe_strip, **kwargs)
+                                safe_strip=safe_strip, random=random, **kwargs)
 
 def _compute_support_kl(data, supports, bad_traces):
     n_supports = len(supports)
@@ -1263,13 +1267,13 @@ def _compute_local_js(array_1, array_2):
     return 1 - (div_1 + div_2) / 2
 
 
-def compute_support_js(data, supports, bad_traces, safe_strip=0, **kwargs):
+def compute_support_js(data, supports, bad_traces, safe_strip=0, random=True, **kwargs):
     #pylint: disable=missing-function-docstring
     return compute_support_func(function_ndarray=_compute_support_js,
                                 function_str=None,
                                 name='JS-divergence',
                                 data=data, supports=supports, bad_traces=bad_traces,
-                                safe_strip=safe_strip, **kwargs)
+                                safe_strip=safe_strip, random=random, **kwargs)
 
 def _compute_support_js(data, supports, bad_traces):
     n_supports = len(supports)
@@ -1307,13 +1311,13 @@ def _compute_local_hellinger(array_1, array_2):
     return 1 - np.sqrt(np.sum(np.sqrt(array_1) - np.sqrt(array_2)) ** 2) / SQRT_2
 
 
-def compute_support_hellinger(data, supports, bad_traces, safe_strip=0, **kwargs):
+def compute_support_hellinger(data, supports, bad_traces, safe_strip=0, random=True, **kwargs):
     #pylint: disable=missing-function-docstring
     return compute_support_func(function_ndarray=_compute_support_hellinger,
                                 function_str=None,
                                 name='hellinger distance',
                                 data=data, supports=supports, bad_traces=bad_traces,
-                                safe_strip=safe_strip, **kwargs)
+                                safe_strip=safe_strip, random=random, **kwargs)
 
 def _compute_support_hellinger(data, supports, bad_traces):
     n_supports = len(supports)
@@ -1356,13 +1360,13 @@ def _compute_local_wasserstein(array_1, array_2):
     return 1 - np.sum(np.multiply(np.abs(cdf_1 - cdf_2), deltas))
 
 
-def compute_support_wasserstein(data, supports, bad_traces, safe_strip=0, **kwargs):
+def compute_support_wasserstein(data, supports, bad_traces, safe_strip=0, random=True, **kwargs):
     #pylint: disable=missing-function-docstring
     return compute_support_func(function_ndarray=_compute_support_wasserstein,
                                 function_str=None,
                                 name='wasserstein distance',
                                 data=data, supports=supports, bad_traces=bad_traces,
-                                safe_strip=safe_strip, **kwargs)
+                                safe_strip=safe_strip, random=random, **kwargs)
 
 def _compute_support_wasserstein(data, supports, bad_traces):
     n_supports = len(supports)
@@ -1402,13 +1406,13 @@ def _compute_local_tv(array_1, array_2):
     return 1 - 0.5*np.sum(np.abs(array_1 - array_2))
 
 
-def compute_support_tv(data, supports, bad_traces, safe_strip=0, **kwargs):
+def compute_support_tv(data, supports, bad_traces, safe_strip=0, random=True, **kwargs):
     #pylint: disable=missing-function-docstring
     return compute_support_func(function_ndarray=_compute_support_tv,
                                 function_str=None,
                                 name='Total variation',
                                 data=data, supports=supports, bad_traces=bad_traces,
-                                safe_strip=safe_strip, **kwargs)
+                                safe_strip=safe_strip, random=random, **kwargs)
 
 def _compute_support_tv(data, supports, bad_traces):
     n_supports = len(supports)
