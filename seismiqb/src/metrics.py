@@ -1023,8 +1023,8 @@ def compute_support_func(function_ndarray, function_str, name,
 
     if isinstance(supports, (int, tuple, list, np.ndarray)):
         if isinstance(supports, int):
-            mode = 'random' if random else 'fixed'
-            title = f'{name} with {supports} {mode} supports'
+            _mode = 'random' if random else 'fixed'
+            title = f'{name} with {supports} {_mode} supports'
             if safe_strip:
                 bad_traces[:, :safe_strip], bad_traces[:, -safe_strip:] = 1, 1
                 bad_traces[:safe_strip, :], bad_traces[-safe_strip:, :] = 1, 1
