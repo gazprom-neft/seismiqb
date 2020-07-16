@@ -141,7 +141,7 @@ class BaseSeismicMetric(Metrics):
         array-like
             Matrix of (n_ilines, n_xlines) shape with computed metric for each point.
         """
-        metric, title = compute_local_corrs(data=self.data, bad_traces=self.bad_traces,
+        metric, title = compute_local_corrs(data=self.data, bad_traces=self.bad_traces, empty_horizon=self.empty_horizon,
                                             kernel_size=kernel_size, reduce_func=reduce_func, **kwargs)
         plot_dict = {
             'spatial': self.spatial,
@@ -178,7 +178,7 @@ class BaseSeismicMetric(Metrics):
             Matrix of either (n_ilines, n_xlines, n_supports) or (n_ilines, n_xlines) shape with
             computed metric for each point.
         """
-        metric, title = compute_support_corrs(data=self.data, supports=supports, bad_traces=self.bad_traces,
+        metric, title = compute_support_corrs(data=self.data, supports=supports, bad_traces=self.bad_traces, empty_horizon=self.empty_horizon,
                                               safe_strip=safe_strip, line_no=line_no, **kwargs)
         plot_dict = {
             'spatial': self.spatial,
@@ -211,7 +211,7 @@ class BaseSeismicMetric(Metrics):
 
     def support_crosscorrs(self, supports=10, safe_strip=0, **kwargs):
         """ Compute cross-correlation between each trace and support traces. """
-        metric, title = compute_support_crosscorrs(data=self.data, supports=supports, bad_traces=self.bad_traces,
+        metric, title = compute_support_crosscorrs(data=self.data, supports=supports, bad_traces=self.bad_traces, empty_horizon=self.empty_horizon,
                                                    safe_strip=safe_strip, **kwargs)
         plot_dict = {
             'spatial': self.spatial,
@@ -244,7 +244,7 @@ class BaseSeismicMetric(Metrics):
 
     def support_btch(self, supports=10, safe_strip=0, **kwargs):
         """ Compute Bhattacharyya distance between each trace and support traces. """
-        metric, title = compute_support_btch(data=self.probs, supports=supports, bad_traces=self.bad_traces,
+        metric, title = compute_support_btch(data=self.probs, supports=supports, bad_traces=self.bad_traces, empty_horizon=self.empty_horizon,
                                              safe_strip=safe_strip, **kwargs)
         plot_dict = {
             'spatial': self.spatial,
@@ -281,7 +281,7 @@ class BaseSeismicMetric(Metrics):
 
     def support_kl(self, supports=10, safe_strip=0, **kwargs):
         """ Compute Kullback-Leibler divergence between each trace and support traces. """
-        metric, title = compute_support_kl(data=self.probs, supports=supports, bad_traces=self.bad_traces,
+        metric, title = compute_support_kl(data=self.probs, supports=supports, bad_traces=self.bad_traces, empty_horizon=self.empty_horizon,
                                            safe_strip=safe_strip, **kwargs)
         plot_dict = {
             'spatial': self.spatial,
@@ -316,7 +316,7 @@ class BaseSeismicMetric(Metrics):
 
     def support_js(self, supports=10, safe_strip=0, **kwargs):
         """ Compute Jensen-Shannon distance between each trace and support traces. """
-        metric, title = compute_support_js(data=self.probs, supports=supports, bad_traces=self.bad_traces,
+        metric, title = compute_support_js(data=self.probs, supports=supports, bad_traces=self.bad_traces, empty_horizon=self.empty_horizon,
                                            safe_strip=safe_strip, **kwargs)
         plot_dict = {
             'spatial': self.spatial,
@@ -349,7 +349,7 @@ class BaseSeismicMetric(Metrics):
 
     def support_hellinger(self, supports=10, safe_strip=0, **kwargs):
         """ Compute Hellinger distance between each trace and support traces. """
-        metric, title = compute_support_hellinger(data=self.probs, supports=supports, bad_traces=self.bad_traces,
+        metric, title = compute_support_hellinger(data=self.probs, supports=supports, bad_traces=self.bad_traces, empty_horizon=self.empty_horizon,
                                                   safe_strip=safe_strip, **kwargs)
         plot_dict = {
             'spatial': self.spatial,
@@ -382,7 +382,7 @@ class BaseSeismicMetric(Metrics):
 
     def support_tv(self, supports=10, safe_strip=0, **kwargs):
         """ Compute total variation distance between each trace and support traces. """
-        metric, title = compute_support_tv(data=self.probs, supports=supports, bad_traces=self.bad_traces,
+        metric, title = compute_support_tv(data=self.probs, supports=supports, bad_traces=self.bad_traces, empty_horizon=self.empty_horizon,
                                            safe_strip=safe_strip, **kwargs)
         plot_dict = {
             'spatial': self.spatial,
@@ -417,7 +417,7 @@ class BaseSeismicMetric(Metrics):
 
     def support_wasserstein(self, supports=10, safe_strip=0, **kwargs):
         """ Compute Wasserstein distance between each trace and support traces. """
-        metric, title = compute_support_wasserstein(data=self.probs, supports=supports, bad_traces=self.bad_traces,
+        metric, title = compute_support_wasserstein(data=self.probs, supports=supports, bad_traces=self.bad_traces, empty_horizon=self.empty_horizon,
                                                     safe_strip=safe_strip, **kwargs)
         plot_dict = {
             'spatial': self.spatial,
@@ -604,10 +604,12 @@ class HorizonMetrics(BaseSeismicMetric):
             self._data = None # evaluated later
             self._probs = None
             self.bad_traces = np.copy(self.horizon.geometry.zero_traces)
-            self.bad_traces[self.horizon.full_matrix == Horizon.FILL_VALUE] = 1
+            self.empty_horizon = np.copy(self.horizon.geometry.zero_traces)
+            self.empty_horizon[self.horizon.full_matrix == Horizon.FILL_VALUE] = 1
             self.spatial = True
 
         else: # metrics are computed on a specific slide
+            # TODO: ???
             self._data, self.bad_traces = self.horizon.get_cube_values_line(orientation=orientation, line=line,
                                                                             window=window, offset=offset, scale=scale)
             self._probs = None
@@ -994,7 +996,7 @@ def apply_local_func(compute_func, reduce_func, data, bad_traces, kernel_size):
 
 
 def compute_support_func(function_ndarray, function_str, name,
-                         data, supports, bad_traces, safe_strip=0, line_no=None, random=True, **kwargs):
+                         data, supports, bad_traces, empty_horizon, safe_strip=0, line_no=None, random=True, **kwargs):
     """ Apply function to compare each trace and a number of support traces.
 
     Parameters
@@ -1029,13 +1031,17 @@ def compute_support_func(function_ndarray, function_str, name,
                 bad_traces[:, :safe_strip], bad_traces[:, -safe_strip:] = 1, 1
                 bad_traces[:safe_strip, :], bad_traces[-safe_strip:, :] = 1, 1
 
-            np.random.seed(0)
-            non_zero_traces = np.where(bad_traces == 0)
             if random:
-                indices = np.random.choice(len(non_zero_traces[0]), supports)
+                np.random.seed(0)
+                non_empty_horizon = np.where(empty_horizon == 0)
+                indices = np.random.choice(len(non_empty_horizon[0]), supports)
+                supports = np.array([non_empty_horizon[0][indices], non_empty_horizon[1][indices]]).T
             else:
+                non_zero_traces = np.where(bad_traces == 0)
                 indices = np.arange(0, len(non_zero_traces[0]), len(non_zero_traces[0]) // supports)[:supports]
-            supports = np.array([non_zero_traces[0][indices], non_zero_traces[1][indices]]).T
+                indices = indices[empty_horizon[non_zero_traces[0][indices], non_zero_traces[1][indices]] == 0]
+                supports = np.array([non_zero_traces[0][indices], non_zero_traces[1][indices]]).T
+            print(supports)
 
         elif isinstance(supports, (tuple, list, np.ndarray)):
             title = f'{name} with {len(supports)} supports'
@@ -1076,12 +1082,13 @@ def _compute_local_corrs(array_1, array_2):
     return result / len(array_1)
 
 
-def compute_support_corrs(data, supports, bad_traces, safe_strip=0, line_no=None, random=True, **kwargs):
+def compute_support_corrs(data, supports, bad_traces, empty_horizon, safe_strip=0, line_no=None, random=True, **kwargs):
     #pylint: disable=missing-function-docstring
     return compute_support_func(function_ndarray=_compute_support_corrs,
                                 function_str=_compute_line_corrs,
                                 name='correlation',
                                 data=data, supports=supports, bad_traces=bad_traces,
+                                empty_horizon=empty_horizon,
                                 safe_strip=safe_strip, line_no=line_no, random=random, **kwargs)
 
 def _compute_support_corrs(data, supports, bad_traces):
@@ -1147,12 +1154,13 @@ def _compute_local_crosscorrs(array_1, array_2):
     return np.argmax(temp)
 
 
-def compute_support_crosscorrs(data, supports, bad_traces, safe_strip=0, random=True, **kwargs):
+def compute_support_crosscorrs(data, supports, bad_traces, empty_horizon, safe_strip=0, random=True, **kwargs):
     #pylint: disable=missing-function-docstring
     return compute_support_func(function_ndarray=_compute_support_crosscorrs,
                                 function_str=None,
                                 name='Cross-correlation',
                                 data=data, supports=supports, bad_traces=bad_traces,
+                                empty_horizon=empty_horizon,
                                 safe_strip=safe_strip, random=random, **kwargs)
 
 def _compute_support_crosscorrs(data, supports, bad_traces):
@@ -1194,6 +1202,7 @@ def compute_support_btch(data, supports, bad_traces, safe_strip=0, random=True, 
                                 function_str=None,
                                 name='Bhattacharyya-divergence',
                                 data=data, supports=supports, bad_traces=bad_traces,
+                                empty_horizon=empty_horizon,
                                 safe_strip=safe_strip, random=random, **kwargs)
 
 def _compute_support_btch(data, supports, bad_traces):
@@ -1231,6 +1240,7 @@ def compute_support_kl(data, supports, bad_traces, safe_strip=0, random=True, **
                                 function_str=None,
                                 name='KL-divergence',
                                 data=data, supports=supports, bad_traces=bad_traces,
+                                empty_horizon=empty_horizon,
                                 safe_strip=safe_strip, random=random, **kwargs)
 
 def _compute_support_kl(data, supports, bad_traces):
@@ -1317,6 +1327,7 @@ def compute_support_hellinger(data, supports, bad_traces, safe_strip=0, random=T
                                 function_str=None,
                                 name='hellinger distance',
                                 data=data, supports=supports, bad_traces=bad_traces,
+                                empty_horizon=empty_horizon,
                                 safe_strip=safe_strip, random=random, **kwargs)
 
 def _compute_support_hellinger(data, supports, bad_traces):
@@ -1366,6 +1377,7 @@ def compute_support_wasserstein(data, supports, bad_traces, safe_strip=0, random
                                 function_str=None,
                                 name='wasserstein distance',
                                 data=data, supports=supports, bad_traces=bad_traces,
+                                empty_horizon=empty_horizon,
                                 safe_strip=safe_strip, random=random, **kwargs)
 
 def _compute_support_wasserstein(data, supports, bad_traces):
@@ -1412,6 +1424,7 @@ def compute_support_tv(data, supports, bad_traces, safe_strip=0, random=True, **
                                 function_str=None,
                                 name='Total variation',
                                 data=data, supports=supports, bad_traces=bad_traces,
+                                empty_horizon=empty_horizon,
                                 safe_strip=safe_strip, random=random, **kwargs)
 
 def _compute_support_tv(data, supports, bad_traces):
