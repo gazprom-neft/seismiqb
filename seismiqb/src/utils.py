@@ -621,3 +621,27 @@ def generate_points(edges, divisors, lengths, indices):
                 idx_copy //= divisor
             low[i, j] = edge[idx_copy % length]
     return low
+
+
+def make_distribution_function(array, num_bins=30):
+    """ Make vectorized cumulative distribution function for an array. Preserves the input's shape.
+    Used for increasing the contrast ration of an image.
+    """
+    # make 1d-histogram
+    densities, coords = np.histogram(array, bins=num_bins, density=True)
+
+    # compute value-series of cumulative distribution function
+    dist_func_series = np.cumsum((coords[1:] - coords[:-1]) * densities)
+    dist_func_series = np.array([0] + dist_func_series.tolist() + [1])
+
+    # extend coordinates-vec
+    coords = np.array(coords.tolist() + [np.inf]).reshape(1, -1)
+
+    # form vectorized cumulative distribution function
+    def dist_func(x):
+        initial_shape = x.shape
+        x = x.reshape(-1, 1)
+        bin_nums = np.argmax(x < coords, axis=-1)
+        return dist_func_series[bin_nums].reshape(initial_shape)
+    
+    return dist_func
