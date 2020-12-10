@@ -183,10 +183,10 @@ class SeismicGeometry:
             return np.prod(self.zero_traces.shape) - self.zero_traces.sum()
         return len(self.dataframe)
 
-
-    def store_meta(self, path=None):
+    def store_meta(self, path=None, meta_update=None):
         """ Store collected stats on disk. """
         path_meta = path or os.path.splitext(self.path)[0] + '.meta'
+        meta_update = dict() if meta_update is None else meta_update
 
         # Remove file, if exists: h5py can't do that
         if os.path.exists(path_meta):
@@ -198,7 +198,10 @@ class SeismicGeometry:
             for attr in self.PRESERVED + self.PRESERVED_LAZY:
                 try:
                     if hasattr(self, attr) and getattr(self, attr) is not None:
-                        file_meta['/info/' + attr] = getattr(self, attr)
+                        if attr in meta_update:
+                            file_meta['/info/' + attr] = meta_update.get(attr)
+                        else:
+                            file_meta['/info/' + attr] = getattr(self, attr)
                 except ValueError:
                     # Raised when you try to store post-stack descriptors for pre-stack cube
                     pass
