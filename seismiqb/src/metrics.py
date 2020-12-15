@@ -900,15 +900,15 @@ class GeometryMetrics(BaseSeismicMetric):
         pbar = tqdm if pbar else lambda iterator, *args, **kwargs: iterator
         metric = np.full((*self.geometries[0].ranges, l), np.nan)
 
-        heights = np.arange(self.geometries[0].cube_shape[2]) if heights is None else np.arange(*heights)
+        heights = slice(0, self.geometries[0].cube_shape[2]) if heights is None else slice(*heights)
 
         with pbar(total=total) as prog_bar:
             for il_block in np.arange(0, self.geometries[0].cube_shape[0], block_size[0]-window[0]):
                 for xl_block in np.arange(0, self.geometries[0].cube_shape[1], block_size[1]-window[1]):
                     block_len = np.min((np.array(self.geometries[0].ranges) - (il_block, xl_block),
                                         block_size), axis=0)
-                    locations = [np.arange(il_block, il_block + block_len[0]),
-                                 np.arange(xl_block, xl_block + block_len[1]),
+                    locations = [slice(il_block, il_block + block_len[0]),
+                                 slice(xl_block, xl_block + block_len[1]),
                                  heights]
 
                     blocks = [prep_func(geometry.load_crop(locations)) for geometry in self.geometries]

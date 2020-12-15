@@ -20,6 +20,7 @@ import plotly
 import plotly.figure_factory as ff
 
 from .utils import round_to_array, groupby_mean, groupby_min, groupby_max, HorizonSampler, filter_simplices
+from .utils import make_gaussian_kernel
 from .plotters import plot_image
 
 
@@ -365,10 +366,11 @@ class Horizon:
     # Value to place into blank spaces
     FILL_VALUE = -999999
 
-    def __init__(self, storage, geometry, name=None, **kwargs):
+    def __init__(self, storage, geometry, name=None, dtype=np.int32, **kwargs):
         # Meta information
         self.path = None
         self.name = name
+        self.dtype = dtype
         self.format = None
 
         # Location of the horizon inside cube spatial range
@@ -453,7 +455,7 @@ class Horizon:
         """
         if self._matrix is None and self.points is not None:
             self._matrix = self.points_to_matrix(self.points, self.i_min, self.x_min,
-                                                 self.i_length, self.x_length)
+                                                 self.i_length, self.x_length, self.dtype)
         return self._matrix
 
     @matrix.setter
@@ -461,10 +463,11 @@ class Horizon:
         self._matrix = value
 
     @staticmethod
-    def points_to_matrix(points, i_min, x_min, i_length, x_length):
+    def points_to_matrix(points, i_min, x_min, i_length, x_length, dtype=np.int32):
         """ Convert array of (N, 3) shape to a depth map (matrix). """
-        matrix = np.full((i_length, x_length), Horizon.FILL_VALUE, np.int32)
-        matrix[points[:, 0] - i_min, points[:, 1] - x_min] = points[:, 2]
+        matrix = np.full((i_length, x_length), Horizon.FILL_VALUE, dtype)
+        matrix[points[:, 0].astype(np.int32) - i_min,
+               points[:, 1].astype(np.int32) - x_min] = points[:, 2]
         return matrix
 
     @property
@@ -572,13 +575,18 @@ class Horizon:
                            (points[:, 1] < self.cube_shape[1]) &
                            (points[:, 2] < self.cube_shape[2]))[0]
             points = points[idx]
-        self.points = np.rint(points).astype(np.int32)
+
+        if self.dtype == np.int32:
+            points = np.rint(points)
+        self.points = points.astype(self.dtype)
 
         # Collect stats on separate axes. Note that depth stats are properties
         self.reset_storage('matrix')
         if len(self.points) > 0:
-            self.i_min, self.x_min, self._h_min = np.min(self.points, axis=0).astype(np.int32)
-            self.i_max, self.x_max, self._h_max = np.max(self.points, axis=0).astype(np.int32)
+            self.i_min, self.x_min, _ = np.min(self.points, axis=0).astype(np.int32)
+            self.i_max, self.x_max, _ = np.max(self.points, axis=0).astype(np.int32)
+            self._h_min = self.points[:, 2].min().astype(self.dtype)
+            self._h_max = self.points[:, 2].max().astype(self.dtype)
 
             self.i_length = (self.i_max - self.i_min) + 1
             self.x_length = (self.x_max - self.x_min) + 1
@@ -635,7 +643,12 @@ class Horizon:
 
     def from_full_matrix(self, matrix, **kwargs):
         """ Init from matrix that covers the whole cube. """
-        self.from_matrix(matrix, 0, 0, **kwargs)
+        kwargs = {
+            'i_min': 0,
+            'x_min': 0,
+            **kwargs
+        }
+        self.from_matrix(matrix, **kwargs)
 
 
     def from_dict(self, dictionary, transform=True, **kwargs):
@@ -822,37 +835,12 @@ class Horizon:
         """
         def smoothing_function(src, **kwds):
             _ = kwds
-            k = int(np.floor(kernel_size / 2))
-
-            ax = np.linspace(-(kernel_size - 1) / 2., (kernel_size - 1) / 2., kernel_size)
-            x_points, y_points = np.meshgrid(ax, ax)
-            kernel = np.exp(-0.5 * (np.square(x_points) + np.square(y_points)) / np.square(sigma))
-            gaussian_kernel = (kernel / np.sum(kernel).astype(np.float32))
-            raveled_gaussian_kernel = gaussian_kernel.ravel()
-
-            @njit
-            def _smoothing_function(src, fill_value):
-                #pylint: disable=not-an-iterable
-                dst = np.copy(src)
-                for iline in range(k, src.shape[0]-k):
-                    for xline in prange(k, src.shape[1]-k):
-                        element = src[iline-k:iline+k+1, xline-k:xline+k+1]
-
-                        s, sum_weights = 0.0, 0.0
-                        for item, weight in zip(element.ravel(), raveled_gaussian_kernel):
-                            if item != fill_value:
-                                s += item * weight
-                                sum_weights += weight
-
-                        if sum_weights != 0.0:
-                            val = s / sum_weights
-                            dst[iline, xline] = val
-                dst = np.rint(dst).astype(np.int32)
-                return dst
+            gaussian_kernel = make_gaussian_kernel(kernel_size, sigma)
 
             smoothed = src
             for _ in range(iters):
-                smoothed = _smoothing_function(smoothed, self.FILL_VALUE)
+                smoothed = _smoothing_function(smoothed, gaussian_kernel, self.FILL_VALUE, False, np.inf)
+                smoothed = np.rint(smoothed).astype(np.int32)
 
             if preserve_borders:
                 # pylint: disable=invalid-unary-operand-type
@@ -1249,6 +1237,13 @@ class Horizon:
         grad[self.matrix == self.FILL_VALUE] = self.FILL_VALUE
         return grad
 
+    def make_float_matrix(self, kernel=None, kernel_size=7, sigma=2., margin=5):
+        """ Smooth the depth matrix to produce floating point numbers. """
+        kernel = kernel if kernel is not None else make_gaussian_kernel(kernel_size, sigma)
+        float_matrix = _smoothing_function(self.full_matrix, kernel,
+                                           fill_value=self.FILL_VALUE,
+                                           preserve=True, margin=margin)
+        return float_matrix
 
     # Evaluate horizon on its own / against other(s)
     def evaluate(self, compute_metric=True, supports=50, plot=True, savepath=None, printer=print, **kwargs):
@@ -1563,8 +1558,78 @@ class Horizon:
         return horizons
 
 
+    @staticmethod
+    def average_horizons(horizons):
+        """ Average list of horizons into one surface. """
+        geometry = horizons[0].geometry
+        horizon_matrix = np.zeros(geometry.lens, dtype=np.float32)
+        std_matrix = np.zeros(geometry.lens, dtype=np.float32)
+        counts_matrix = np.zeros(geometry.lens, dtype=np.int32)
 
-    def dump(self, path, transform=None, add_height=True):
+        for horizon in horizons:
+            fm = horizon.full_matrix
+            horizon_matrix[fm != Horizon.FILL_VALUE] += fm[fm != Horizon.FILL_VALUE]
+            std_matrix[fm != Horizon.FILL_VALUE] += fm[fm != Horizon.FILL_VALUE] ** 2
+            counts_matrix[fm != Horizon.FILL_VALUE] += 1
+
+        horizon_matrix[counts_matrix != 0] /= counts_matrix[counts_matrix != 0]
+        horizon_matrix[counts_matrix == 0] = Horizon.FILL_VALUE
+
+        std_matrix[counts_matrix != 0] /= counts_matrix[counts_matrix != 0]
+        std_matrix -= horizon_matrix ** 2
+        std_matrix = np.sqrt(std_matrix)
+        std_matrix[counts_matrix == 0] = np.nan
+
+        averaged_horizon = Horizon(horizon_matrix.astype(np.int32), geometry=geometry)
+        return averaged_horizon, {
+            'matrix': horizon_matrix,
+            'std_matrix': std_matrix,
+        }
+
+
+    # Save horizon to disk
+    @staticmethod
+    def dump_charisma(points, path, transform=None, add_height=False):
+        """ Save (N, 3) array of points to disk in CHARISMA-compatible format.
+
+        Parameters
+        ----------
+        points : ndarray
+            Array of (N, 3) shape.
+        path : str
+            Path to a file to save horizon to.
+        transform : None or callable
+            If callable, then applied to points after converting to ilines/xlines coordinate system.
+        add_height : bool
+            Whether to concatenate average horizon height to a file name.
+        """
+        points = points if transform is None else transform(points)
+        path = path if not add_height else f'{path}_#{round(np.mean(points[:, 2]), 1)}'
+
+        df = pd.DataFrame(points, columns=Horizon.COLUMNS)
+        df.sort_values(['iline', 'xline'], inplace=True)
+        df = df.astype({'iline': np.int32, 'xline': np.int32, 'height': np.float32})
+        df.to_csv(path, sep=' ', columns=Horizon.COLUMNS, index=False, header=False)
+
+    def dump_matrix(self, matrix, path, transform=None, add_height=False):
+        """ Save (N_ILINES, N_CROSSLINES) matrix in CHARISMA-compatible format.
+
+        Parameters
+        ----------
+        matrix : ndarray
+            Array of (N_ILINES, N_CROSSLINES) shape with depth values.
+        path : str
+            Path to a file to save horizon to.
+        transform : None or callable
+            If callable, then applied to points after converting to ilines/xlines coordinate system.
+        add_height : bool
+            Whether to concatenate average horizon height to a file name.
+        """
+        points = Horizon.matrix_to_points(matrix)
+        points = self.cubic_to_lines(points)
+        Horizon.dump_charisma(points, path, transform, add_height)
+
+    def dump(self, path, transform=None, add_height=False):
         """ Save horizon points on disk.
 
         Parameters
@@ -1576,14 +1641,32 @@ class Horizon:
         add_height : bool
             Whether to concatenate average horizon height to a file name.
         """
-        values = self.cubic_to_lines(copy(self.points))
-        values = values if transform is None else transform(values)
+        points = self.cubic_to_lines(copy(self.points))
+        self.dump_charisma(points, path, transform, add_height)
 
-        df = pd.DataFrame(values, columns=self.COLUMNS)
-        df.sort_values(['iline', 'xline'], inplace=True)
+    def dump_float(self, path, transform=None, kernel_size=7, sigma=2., margin=5, add_height=False):
+        """ Smooth out the horizon values, producing floating-point numbers, and dump to the disk.
 
-        path = path if not add_height else f'{path}_#{round(self.h_mean, 1)}'
-        df.to_csv(path, sep=' ', columns=self.COLUMNS, index=False, header=False)
+        Parameters
+        ----------
+        path : str
+            Path to a file to save horizon to.
+        transform : None or callable
+            If callable, then applied to points after converting to ilines/xlines coordinate system.
+        kernel_size : int
+            Size of the filtering kernel.
+        sigma : number
+            Standard deviation of the Gaussian kernel.
+        margin : number
+            During the filtering, not include in the computation all the points that are
+            further away from the current, than the margin.
+        add_height : bool
+            Whether to concatenate average horizon height to a file name.
+        """
+        matrix = self.make_float_matrix(kernel_size=kernel_size, sigma=sigma, margin=margin)
+        points = self.matrix_to_points(matrix)
+        points = self.cubic_to_lines(points)
+        self.dump_charisma(points, path, transform, add_height)
 
     def dump_points(self, path, fmt='npy'):
         """ Dump points. """
@@ -1837,7 +1920,8 @@ class Horizon:
             fig.write_html(savepath)
 
 
-    def show_slide(self, loc, width=3, axis='i', order_axes=None, zoom_slice=None, **kwargs):
+    def show_slide(self, loc, width=3, axis='i', order_axes=None, zoom_slice=None,
+                   n_ticks=5, delta_ticks=100, **kwargs):
         """ Show slide with horizon on it.
 
         Parameters
@@ -1871,25 +1955,34 @@ class Horizon:
             yticks = yticks[zoom_slice[1]]
 
         # defaults for plotting if not supplied in kwargs
+        header = self.geometry.axis_names[axis]
+        total = self.geometry.cube_shape[axis]
+
         if axis in [0, 1]:
-            header = self.geometry.index_headers[axis]
             xlabel = self.geometry.index_headers[1 - axis]
-            ylabel = 'depth'
-            total = self.geometry.lens[axis]
+            ylabel = 'DEPTH'
         if axis == 2:
-            header = 'Depth'
             xlabel = self.geometry.index_headers[0]
             ylabel = self.geometry.index_headers[1]
             total = self.geometry.depth
 
+        xticks = xticks[::max(1, round(len(xticks) // (n_ticks - 1) / delta_ticks)) * delta_ticks] + [xticks[-1]]
+        xticks = sorted(list(set(xticks)))
+        yticks = yticks[::max(1, round(len(xticks) // (n_ticks - 1) / delta_ticks)) * delta_ticks] + [yticks[-1]]
+        yticks = sorted(list(set(yticks)), reverse=True)
+
+        if len(xticks) > 2 and (xticks[-1] - xticks[-2]) < delta_ticks:
+            xticks.pop(-2)
+        if len(yticks) > 2 and (yticks[0] - yticks[1]) < delta_ticks:
+            yticks.pop(1)
+
         kwargs = {
             'mode': 'overlap',
-            'title': (f'Horizon `{self.name}` on `{self.geometry.name}`' +
-                      f'\n {header} {loc} out of {total}'),
+            'title': f'Horizon `{self.name}` on `{self.geometry.name}`\n {header} {loc} out of {total}',
             'xlabel': xlabel,
             'ylabel': ylabel,
-            'xticks': xticks[::max(1, round(len(xticks)//8/100))*100],
-            'yticks': yticks[::max(1, round(len(yticks)//10/100))*100][::-1],
+            'xticks': xticks,
+            'yticks': yticks,
             'y': 1.02,
             **kwargs
         }
@@ -1911,6 +2004,34 @@ class Horizon:
 class StructuredHorizon(Horizon):
     """ Convenient alias for `Horizon` class. """
 
+
+@njit(parallel=True)
+def _smoothing_function(src, kernel, fill_value, preserve=False, margin=33):
+    #pylint: disable=not-an-iterable
+    k1 = int(np.floor(kernel.shape[0] / 2))
+    k2 = int(np.floor(kernel.shape[1] / 2))
+    raveled_kernel = kernel.ravel() / np.sum(kernel)
+
+    dst = np.copy(src)
+    for iline in range(k1, src.shape[0]-k1):
+        for xline in prange(k2, src.shape[1]-k2):
+            central = src[iline, xline]
+            if preserve and central == fill_value:
+                continue
+
+            element = src[iline-k1:iline+k1+1, xline-k2:xline+k2+1]
+
+            s, sum_weights = 0.0, 0.0
+            for item, weight in zip(element.ravel(), raveled_kernel):
+                if item != fill_value:
+                    if abs(item - central) <= margin:
+                        s += item * weight
+                        sum_weights += weight
+
+            if sum_weights != 0.0:
+                val = s / sum_weights
+                dst[iline, xline] = val
+    return dst
 
 @njit
 def _filtering_function(points, filtering_matrix):

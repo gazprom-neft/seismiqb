@@ -611,7 +611,8 @@ class SeismicCubeset(Dataset):
                                                                 printer=printer, hist=hist, plot=plot)
 
 
-    def show_slide(self, loc, idx=0, axis='iline', zoom_slice=None, mode='overlap', backend='matplotlib', **kwargs):
+    def show_slide(self, loc, idx=0, axis='iline', zoom_slice=None, mode='overlap',
+                   n_ticks=5, delta_ticks=100, **kwargs):
         """ Show full slide of the given cube on the given line.
 
         Parameters
@@ -664,26 +665,33 @@ class SeismicCubeset(Dataset):
             yticks = yticks[zoom_slice[1]]
 
         # Plotting defaults
+        header = geometry.axis_names[axis]
+        total = geometry.cube_shape[axis]
+
         if axis in [0, 1]:
-            header = geometry.index_headers[axis]
             xlabel = geometry.index_headers[1 - axis]
-            ylabel = 'depth'
-            total = geometry.lens[axis]
+            ylabel = 'DEPTH'
         if axis == 2:
-            header = 'Depth'
             xlabel = geometry.index_headers[0]
             ylabel = geometry.index_headers[1]
-            total = geometry.depth
+
+        xticks = xticks[::max(1, round(len(xticks) // (n_ticks - 1) / delta_ticks)) * delta_ticks] + [xticks[-1]]
+        xticks = sorted(list(set(xticks)))
+        yticks = yticks[::max(1, round(len(xticks) // (n_ticks - 1) / delta_ticks)) * delta_ticks] + [yticks[-1]]
+        yticks = sorted(list(set(yticks)), reverse=True)
+
+        if len(xticks) > 2 and (xticks[-1] - xticks[-2]) < delta_ticks:
+            xticks.pop(-2)
+        if len(yticks) > 2 and (yticks[0] - yticks[1]) < delta_ticks:
+            yticks.pop(1)
 
         kwargs = {
             'mode': mode,
-            'backend': backend,
-            'title': (f'Data slice on `{geometry.name}`' +
-                      f'\n {header} {loc} out of {total}'),
+            'title': f'Data slice on `{geometry.name}\n {header} {loc} out of {total}',
             'xlabel': xlabel,
             'ylabel': ylabel,
-            'xticks': xticks[::max(1, round(len(xticks)//8/100))*100],
-            'yticks': yticks[::max(1, round(len(yticks)//10/100))*100][::-1],
+            'xticks': xticks,
+            'yticks': yticks,
             'y': 1.02,
             **kwargs
         }
@@ -741,7 +749,7 @@ class SeismicCubeset(Dataset):
 
             result = gen_crop_coordinates(point,
                                           hor_matrix, zero_traces,
-                                          stride, crop_shape,
+                                          stride, crop_shape, horizon.geometry.depth,
                                           horizon.FILL_VALUE, **kwargs)
             if not result:
                 continue

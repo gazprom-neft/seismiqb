@@ -17,6 +17,20 @@
 
 ## Installation
 
+With [pipenv](https://docs.pipenv.org/):
+
+    pipenv install git+https://github.com/gazprom-neft/seismiqb.git#egg=seismiqb
+
+With [pip](https://pip.pypa.io/en/stable/):
+
+    pip3 install git+https://github.com/gazprom-neft/seismiqb.git
+
+After that just import `seismiqb`:
+```python
+import seismiqb
+```
+
+To get the developer version, run
 ```
 git clone --recursive https://github.com/gazprom-neft/seismiqb.git
 ```

@@ -356,10 +356,16 @@ class SeismicCropBatch(Batch):
         -----
         Can be run only after labels-dict is loaded into labels-component.
         """
+        location = self.get(ix, src)
+        shape_ = self.get(ix, 'shapes')
+        mask = np.zeros((shape_), dtype='float32')
+
         labels = self.get(ix, src_labels) if isinstance(src_labels, str) else src_labels
         labels = [labels] if not isinstance(labels, (tuple, list)) else labels
-        check_sum = False
+        if len(labels) == 0:
+            return mask
 
+        check_sum = False
         if indices in [-1, 'all']:
             indices = np.arange(0, len(labels))
         elif indices in [1, 'single']:
@@ -371,10 +377,6 @@ class SeismicCropBatch(Batch):
         elif isinstance(indices, (tuple, list, np.ndarray)):
             pass
         labels = [labels[idx] for idx in indices]
-
-        location = self.get(ix, src)
-        shape_ = self.get(ix, 'shapes')
-        mask = np.zeros((shape_), dtype='float32')
 
         for label in labels:
             mask = label.add_to_mask(mask, locations=location, width=width)
@@ -415,7 +417,7 @@ class SeismicCropBatch(Batch):
             raise SkipBatchException
 
         passdown = passdown or []
-        passdown.extend([src, 'locations'])
+        passdown.extend([src, 'locations', 'shapes'])
         passdown = list(set(passdown))
 
         for compo in passdown:

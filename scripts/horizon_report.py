@@ -110,7 +110,7 @@ if __name__ == '__main__':
             row_dict[f'horizon_{metric_name}'] = np.nanmean(metric)
 
         if config['save-files']:
-            horizon.dump(os.path.join(config['savedir'], horizon.name), add_height=False)
+            shutil.copy2(horizon.path, os.path.join(config['savedir'], horizon.name))
 
         # Try to detect the carcass/prediction of a horizon and evaluate it
         if others:
@@ -147,8 +147,7 @@ if __name__ == '__main__':
 
                     row_dict[f'{other_prefix}_{metric_name}'] = np.nanmean(metric)
                 if config['save-files']:
-                    other.dump(os.path.join(config['savedir'], f'{horizon.name}_{other_prefix}'),
-                               add_height=False)
+                    shutil.copy2(other.path, os.path.join(config['savedir'], f'{horizon.name}_{other_prefix}'))
             else:
                 row_dict = {
                     **row_dict,
