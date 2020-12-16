@@ -9,7 +9,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.special import expit
 
-sys.path.insert(0, '../../../seismiqb')
+sys.path.insert(0, '..')
 
 from seismiqb.batchflow import Pipeline
 from seismiqb.batchflow import B, V, D, P, R
@@ -26,7 +26,7 @@ ITERS = 1000                      # number of train iterations
 BATCH_SIZE = 64                   # number of crops inside one batch
 
 
-def main():
+def detect_fans():
     # Load predefined train-test split
     DATA_SPLIT = 'split.json'
     with open(f'{DATA_SPLIT}', 'r') as handle:
@@ -138,16 +138,16 @@ def main():
                                 'instant_phases', 'instant_amplitudes'],
                            dst='images')
 
-    #     # Apply augmentations
+        # Apply augmentations
         .transpose(src=['images'], order=(2, 0, 1))
 
-    #     # Init pipeline variable to store predictions
+        # Init pipeline variable to store predictions
         .init_variable('predictions', [])
 
-    #     # Import trained model
+        # Import trained model
         .import_model('model', train_pipeline)
 
-    #     # Run inference
+        # Run inference
         .predict_model('model', images=B('images'),
                        fetches='predictions',
                        save_to=V('predictions', mode='e'))
@@ -174,4 +174,4 @@ def main():
             pred_label.dump(f"{pred_label.name}")
 
 if __name__ == "__main__":
-    main()
+    detect_fans()
