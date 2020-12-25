@@ -17,12 +17,9 @@ from scipy.spatial import Delaunay
 from scipy.signal import hilbert
 from skimage.measure import label
 
-import plotly
-import plotly.figure_factory as ff
-
 from .utils import round_to_array, groupby_mean, groupby_min, groupby_max, HorizonSampler, filter_simplices, lru_cache
 from .utils import make_gaussian_kernel, retrieve_function_arguments
-from .plotters import plot_image
+from .plotters import plot_image, show_3d
 
 
 class UnstructuredHorizon:
@@ -2041,8 +2038,8 @@ class Horizon:
         plot_image(amplitudes, mode='rgb', **kwargs)
 
 
-    def show_3d(self, n=100, threshold=100., z_ratio=1., show_axes=True,
-                width=1200, height=1200, margin=100, savepath=None, **kwargs):
+    def show_3d(self, n_points=100, threshold=100., z_ratio=1., zoom_slice=None, show_axes=True,
+                width=1200, height=1200, margin=(0, 0, 100), savepath=None, **kwargs):
         """ Interactive 3D plot. Roughly, does the following:
             - select `n` points to represent the horizon surface
             - triangulate those points
@@ -2051,13 +2048,15 @@ class Horizon:
 
         Parameters
         ----------
-        n : int
+        n_points : int
             Number of points for horizon surface creation.
             The more, the better the image is and the slower it is displayed.
         threshold : number
             Threshold to remove triangles with bigger height differences in vertices.
         z_ratio : number
             Aspect ratio between height axis and spatial ones.
+        zoom_slice : tuple of slices
+            Crop from cube to show.
         show_axes : bool
             Whether to show axes and their labels.
         width, height : number
@@ -2069,21 +2068,57 @@ class Horizon:
         kwargs : dict
             Other arguments of plot creation.
         """
-        # Take most representative points of a horizon
+        title = f'Horizon `{self.name}` on `{self.cube_name}`'
+        aspect_ratio = (self.i_length / self.x_length, 1, z_ratio)
+        axis_labels = (self.geometry.index_headers[0], self.geometry.index_headers[1], 'DEPTH')
+        if zoom_slice is None:
+            zoom_slice = [slice(0, i) for i in self.geometry.cube_shape]
+        zoom_slice[-1] = slice(self.h_min, self.h_max)
+
+        x, y, z, simplices = self.triangulation(n_points, threshold, zoom_slice)
+
+        show_3d(x, y, z, simplices, title, zoom_slice, None, show_axes, aspect_ratio,
+                axis_labels, width, height, margin, savepath, **kwargs)
+
+
+    def triangulation(self, n_points, threshold, slices, **kwargs):
+        """ Create triangultaion of horizon.
+
+        Parameters
+        ----------
+        n_points: int
+            Number of points for horizon surface creation.
+            The more, the better the image is and the slower it is displayed.
+        slices : tuple
+            Region to process.
+
+        Returns
+        -------
+        x, y, z, simplices
+            `x`, `y` and `z` are np.ndarrays of triangle vertices, `simplices` is (N, 3) array where each row
+            represent triangle. Elements of row are indices of points that are vertices of triangle.
+        """
+        _ = kwargs
         weights_matrix = self.full_matrix
+
         grad_i = np.diff(weights_matrix, axis=0, prepend=0)
         grad_x = np.diff(weights_matrix, axis=1, prepend=0)
         weights_matrix = (grad_i + grad_x) / 2
         weights_matrix[np.abs(weights_matrix) > 100] = np.nan
 
-        idx = np.nonzero(self.full_matrix > 0)
+        idx = np.stack(np.nonzero(self.full_matrix > 0), axis=0)
+        mask_1 = (idx <= np.array([slices[0].stop, slices[1].stop]).reshape(2, 1)).all(axis=0)
+        mask_2 = (idx >= np.array([slices[0].start, slices[1].start]).reshape(2, 1)).all(axis=0)
+        mask = np.logical_and(mask_1, mask_2)
+        idx = idx[:, mask]
+
         probs = np.abs(weights_matrix[idx[0], idx[1]].flatten())
         probs[np.isnan(probs)] = np.nanmax(probs)
-        indices = np.random.choice(len(probs), size=n, p=probs / probs.sum())
+        indices = np.random.choice(len(probs), size=n_points, p=probs / probs.sum())
 
         # Convert to meshgrid
-        ilines = self.points[:, 0][indices]
-        xlines = self.points[:, 1][indices]
+        ilines = self.points[mask, 0][indices]
+        xlines = self.points[mask, 1][indices]
         ilines, xlines = np.meshgrid(ilines, xlines)
         ilines = ilines.flatten()
         xlines = xlines.flatten()
@@ -2099,49 +2134,7 @@ class Horizon:
         tri = Delaunay(np.vstack([x, y]).T)
         simplices = filter_simplices(simplices=tri.simplices, points=tri.points,
                                      matrix=self.full_matrix, threshold=threshold)
-
-        # Arguments of graph creation
-        kwargs = {
-            'title': f'Horizon `{self.name}` on `{self.cube_name}`',
-            'colormap': plotly.colors.sequential.Viridis[::-1][:4],
-            'edges_color': 'rgb(70, 40, 50)',
-            'show_colorbar': False,
-            'width': width,
-            'height': height,
-            'aspectratio': {'x': self.i_length / self.x_length, 'y': 1, 'z': z_ratio},
-            **kwargs
-        }
-
-        fig = ff.create_trisurf(x=x, y=y, z=z, simplices=simplices, **kwargs)
-
-        # Update scene with title, labels and axes
-        fig.update_layout(
-            {
-                'scene': {
-                    'xaxis': {
-                        'title': self.geometry.index_headers[0] if show_axes else '',
-                        'showticklabels': show_axes,
-                        'autorange': 'reversed',
-                    },
-                    'yaxis': {
-                        'title': self.geometry.index_headers[1] if show_axes else '',
-                        'showticklabels': show_axes,
-                    },
-                    'zaxis': {
-                        'title': 'DEPTH' if show_axes else '',
-                        'showticklabels': show_axes,
-                        'range': [self.h_max + margin, self.h_min - margin],
-                    },
-                    'camera_eye': {
-                        "x": 1.25, "y": 1.5, "z": 1.5
-                    },
-                }
-            }
-        )
-        fig.show()
-
-        if savepath:
-            fig.write_html(savepath)
+        return x, y, z, simplices
 
     def show_slide(self, loc, width=3, axis='i', order_axes=None, zoom_slice=None,
                    n_ticks=5, delta_ticks=100, **kwargs):

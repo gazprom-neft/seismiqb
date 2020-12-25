@@ -16,7 +16,7 @@ from .geometry import SeismicGeometry
 from .horizon import Horizon
 from .triangulation import triangulation, triangle_rasterization
 
-
+from .plotters import show_3d
 
 class Fault(Horizon):
     """ Contains points of fault.
@@ -202,6 +202,77 @@ class Fault(Horizon):
                 break
             fault_path = os.path.join(path, prefix + '_' + str(i))
             np.save(fault_path, fault[:, :3], allow_pickle=False)
+
+    def show_3d(self, n_sticks=100, n_nodes=10, z_ratio=1., zoom_slice=None, show_axes=True,
+                width=1200, height=1200, margin=100, savepath=None, **kwargs):
+        """ Interactive 3D plot. Roughly, does the following:
+            - select `n` points to represent the horizon surface
+            - triangulate those points
+            - remove some of the triangles on conditions
+            - use Plotly to draw the tri-surface
+
+        Parameters
+        ----------
+        n_sticks : int
+            Number of sticks for each fault.
+        n_nodes : int
+            Number of nodes for each stick.
+        threshold : number
+            Threshold to remove triangles with bigger height differences in vertices.
+        z_ratio : number
+            Aspect ratio between height axis and spatial ones.
+        zoom_slice : tuple of slices
+            Crop from cube to show.
+        show_axes : bool
+            Whether to show axes and their labels.
+        width, height : number
+            Size of the image.
+        margin : number
+            Added margin from below and above along height axis.
+        savepath : str
+            Path to save interactive html to.
+        kwargs : dict
+            Other arguments of plot creation.
+        """
+        title = f'Fault `{self.name}` on `{self.cube_name}`'
+        aspect_ratio = (self.i_length / self.x_length, 1, z_ratio)
+        axis_labels = (self.geometry.index_headers[0], self.geometry.index_headers[1], 'DEPTH')
+        if zoom_slice is None:
+            zoom_slice = [slice(0, i) for i in self.geometry.cube_shape]
+        zoom_slice[-1] = slice(self.h_min, self.h_max)
+        x, y, z, simplices = self.triangulation(n_sticks, n_nodes, zoom_slice)
+
+        show_3d(x, y, z, simplices, title, zoom_slice, None, show_axes, aspect_ratio,
+                axis_labels, width, height, margin, savepath, **kwargs)
+
+    def triangulation(self, n_sticks, n_nodes, slices, **kwargs):
+        """ Create triangultaion of fault.
+
+        Parameters
+        ----------
+        n_sticks : int
+            Number of sticks to create.
+        n_nodes : int
+            Number of nodes for each stick.
+        slices : tuple
+            Region to process.
+
+        Returns
+        -------
+        x, y, z, simplices
+            `x`, `y` and `z` are np.ndarrays of triangle vertices, `simplices` is (N, 3) array where each row
+            represent triangle. Elements of row are indices of points that are vertices of triangle.
+        """
+        points = self.points.copy()
+        for i in range(3):
+            points = points[points[:, i] <= slices[i].stop]
+            points = points[points[:, i] >= slices[i].start]
+        if len(points) <= 3:
+            return None, None, None, None
+        sticks = get_sticks(points, n_sticks, n_nodes)
+        simplices = triangulation(sticks, True)
+        coords = np.concatenate(sticks)
+        return coords[:, 0], coords[:, 1], coords[:, 2], simplices
 
 def split_faults(array, chunk_size=None, overlap=1, pbar=False, cube_shape=None, fmt='mask'):
     """ Label faults in an array.
