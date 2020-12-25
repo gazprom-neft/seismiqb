@@ -400,6 +400,7 @@ def get_sticks(points, n_sticks, n_nodes):
         [description]
     """
     pca = PCA(1)
+    pca.fit(points)
     axis = 0 if np.abs(pca.components_[0][0]) > np.abs(pca.components_[0][1]) else 1
 
     column = points[:, 0] if axis == 0 else points[:, 1]
