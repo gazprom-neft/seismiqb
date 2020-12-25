@@ -1410,7 +1410,8 @@ class SeismicCubeset(Dataset):
                 warn("No labels in {}".format(dir_path))
             paths_txt[idx] = dir_
         self.load_geometries(**kwargs)
-        self.create_labels(paths=paths_txt, filter_zeros=filter_zeros, dst=dst_labels, **kwargs)
+        self.create_labels(paths=paths_txt, filter_zeros=filter_zeros,
+                           dst=dst_labels, labels_class=labels_class, **kwargs)
         self._p, self._bins = p, bins # stored for later sampler creation
 
 

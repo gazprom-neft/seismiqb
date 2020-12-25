@@ -350,30 +350,28 @@ class SeismicGeometry:
     def reset_cache(self):
         """ Clear cached slides. """
         if self.structured is False:
-            method = self.load_slide
+            self.load_slide.reset(instance=self)
         else:
-            method = self.file_hdf5.cached_load
-        method.reset(instance=self)
+            self.file_hdf5.reset()
 
     @property
     def cache_length(self):
         """ Total amount of cached slides. """
         if self.structured is False:
-            method = self.load_slide
+            length = len(self.load_slide.cache()[self])
         else:
-            method = self.file_hdf5.cached_load
-
-        return len(method.cache()[self])
+            length = self.file_hdf5.cache_length
+        return length
 
     @property
     def cache_size(self):
         """ Total size of cached slides. """
         if self.structured is False:
-            method = self.load_slide
+            items = self.load_slide.cache()[self].values()
         else:
-            method = self.file_hdf5.cached_load
+            items = self.file_hdf5.cache_items
 
-        return sum(item.nbytes / (1024 ** 3) for item in method.cache()[self].values())
+        return sum(item.nbytes / (1024 ** 3) for item in items)
 
     @property
     def nbytes(self):
