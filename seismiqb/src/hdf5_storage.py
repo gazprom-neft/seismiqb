@@ -35,18 +35,34 @@ class StorageHDF5:
         'i': 'cube_i', 'x': 'cube_x', 'h': 'cube_h'
     }
 
-    def __init__(self, filename, projections=None, shape=None, mode='r'):
+    def __init__(self, filename, projections='ixh', shape=None, mode='r'):
+        """ Initialize HDF5 storage.
+
+        Parameters
+        ----------
+        filename : str
+            Path to file.
+        projections : str, optional
+            String of 'i', 'h' and 'x' letters. Define which orientations of cube will be created in storage.
+        shape : tuple, optional
+            Shape of cube (if file doesn't exist), by default None
+        mode : str, optional
+            Open modes, by default 'r'.
+                * 'r': Readonly, file must exist
+                * 'r+': Read/write, file must exist
+                * 'w-', 'x': Create file, fail if exists
+                * 'a': Read/write if exists, create otherwise
+        """
         self.filename = filename
+        if mode == 'a':
+            mode = 'r+' if os.path.exists(filename) else 'w-'
         if mode in ('r', 'r+'):
             self.file_hdf5 = SafeIO(filename, opener=h5py.File, mode=mode)
-            projections = projections or [axis for axis in range(3) if self.NAMES[axis] in self.file_hdf5]
-            self.projections = [parse_axis(item) for item in projections]
+            self.projections = [axis for axis in range(3) if self.NAMES[axis] in self.file_hdf5]
             axis = self.projections[0]
             self.shape = np.array(self.cube_orientation(axis).shape)[self.TRANSPOSE[axis]]
-        elif mode == 'a':
-            if os.path.exists(filename):
-                os.remove(filename)
-            self.file_hdf5 = h5py.File(filename, 'a')
+        elif mode == 'w-':
+            self.file_hdf5 = h5py.File(filename, 'w-')
             self.projections = projections or [0, 1, 2]
             self.projections = [parse_axis(item) for item in self.projections]
             self.shape = shape
@@ -58,6 +74,10 @@ class StorageHDF5:
             cube_name = self.NAMES[axis]
             setattr(self, cube_name, self.file_hdf5[cube_name])
 
+    def create_orientation(self, projection):
+        """ Create empty dataset for the cube orientation. """
+        _shape = np.array(self.shape)[self.STRAIGHT[projection]]
+        self.file_hdf5.create_dataset(self.NAMES[projection], _shape)
 
     def cube_orientation(self, projection):
         """ Load the cube in the desired orientation.
@@ -327,11 +347,11 @@ class StorageHDF5:
                 ).all(axis=1)
                 agg_map = np.zeros_like(chunk)
                 for chunk_slc in grid[grid_mask]:
-                    slices = [slice(
+                    _slices = [slice(
                         max(chunk_slc[i, 0], position[i]) - position[i],
                         min(chunk_slc[i, 1], position[i] + window[i]) - position[i]
                     ) for i in range(3)]
-                    agg_map[tuple(slices)] += 1
+                    agg_map[tuple(_slices)] += 1
                 chunk /= agg_map
                 chunk = _chunk + chunk
             dst[slices] = chunk

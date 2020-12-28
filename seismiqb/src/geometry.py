@@ -1133,7 +1133,7 @@ class SeismicGeometrySEGY(SeismicGeometry):
             os.remove(path_hdf5)
 
         # Create file and datasets inside
-        with h5py.File(path_hdf5, "a") as file_hdf5:
+        with h5py.File(path_hdf5, "w-") as file_hdf5:
             cube_hdf5 = {
                 cube_keys[p]: file_hdf5.create_dataset(cube_keys[p], self.cube_shape[axes[p]]) for p in projections
             }
