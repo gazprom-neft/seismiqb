@@ -540,25 +540,26 @@ class SeismicCubeset(Dataset):
 
     def show_3d(self, idx=0, src='labels', aspect_ratio=None, zoom_slice=None,
                 n_points=100, threshold=100, n_sticks=100, n_nodes=10,
-                projections=None, margin=(0, 0, 20), colors_mapping=None, **kwargs):
+                slides=None, margin=(0, 0, 20), colors_mapping=None, **kwargs):
         """ Interactive 3D plot for some elements of cube. Roughly, does the following:
             - take some faults and/or horizons
             - select `n` points to represent the horizon surface and `n_sticks` and `n_nodes` for each fault
             - triangulate those points
             - remove some of the triangles on conditions
             - use Plotly to draw the tri-surface
-            - draw few slides of the cube
+            - draw few slides of the cube if needed
         Parameters
         ----------
         idx : int, str
             Cube index.
         src : str, Horizon-instance or list
-            Items to draw. If item of list (or `src` itself) is str, then all items of that dataset attribute
-            will be drawn, by default, 'labels'.
-        aspect_ratio : tuple of floats.
-            Aspect ratio for each axis.
-        zoom_slice : tuple of slices
-            Crop from cube to show.
+            Items to draw, by default, 'labels'. If item of list (or `src` itself) is str, then all items of
+            that dataset attribute will be drawn.
+        aspect_ratio : None, tuple of floats or Nones
+            Aspect ratio for each axis. Each None in the resulting tuple will be replaced by item from
+            `(geometry.cube_shape[0] / geometry.cube_shape[1], 1, 1)`.
+        zoom_slice : tuple of slices or None
+            Crop from cube to show. By default, the whole cube volume will be shown.
         n_points : int
             Number of points for horizon surface creation.
             The more, the better the image is and the slower it is displayed.
@@ -568,10 +569,12 @@ class SeismicCubeset(Dataset):
             Number of sticks for each fault.
         n_nodes : int
             Number of nodes for each stick.
-        projections : list of tuples
+        slides : list of tuples
             Each tuple is pair of location and axis to load slide from seismic cube.
         margin : tuple of ints
             Added margin for each axis, by default, (0, 0, 20).
+        colors_mapping : dict
+            Mapping of label class name to color defined as str, by default, all labels will be shown in green.
         show_axes : bool
             Whether to show axes and their labels.
         width, height : number
@@ -625,8 +628,8 @@ class SeismicCubeset(Dataset):
         axis_labels = (geometry.index_headers[0], geometry.index_headers[1], 'DEPTH')
 
         images = []
-        if projections is not None:
-            for loc, axis in projections:
+        if slides is not None:
+            for loc, axis in slides:
                 image = geometry.load_slide(loc, axis=axis)
                 if axis == 0:
                     image = image[zoom_slice[1:]]

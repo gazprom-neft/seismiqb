@@ -2034,17 +2034,17 @@ class Horizon:
         n_points : int
             Number of points for horizon surface creation.
             The more, the better the image is and the slower it is displayed.
-        threshold : number
+        threshold : int
             Threshold to remove triangles with bigger height differences in vertices.
-        z_ratio : number
+        z_ratio : int
             Aspect ratio between height axis and spatial ones.
         zoom_slice : tuple of slices
             Crop from cube to show.
         show_axes : bool
             Whether to show axes and their labels.
-        width, height : number
+        width, height : int
             Size of the image.
-        margin : number
+        margin : int
             Added margin from below and above along height axis.
         savepath : str
             Path to save interactive html to.

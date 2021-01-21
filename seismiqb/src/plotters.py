@@ -895,19 +895,19 @@ class PlotlyPlotter:
         self.save_and_show(fig, **updated)
 
 def show_3d(x, y, z, simplices, title, zoom_slice, colors=None, show_axes=True, aspect_ratio=(1, 1, 1),
-            axis_labels=None, width=1200, height=1200, margin=(0, 0, 100), savepath=None,
+            axis_labels=None, width=1200, height=1200, margin=(0, 0, 20), savepath=None,
             images=None, resize_factor=2, colorscale='Greys', **kwargs):
     """ Interactive 3D plot for some elements of cube.
 
     Parameters
     ----------
-    x, y, z : np.ndarrays
+    x, y, z : numpy.ndarrays
         Triangle vertices.
-    simplices : np.ndarray
+    simplices : numpy.ndarray
         (N, 3) array where each row represent triangle. Elements of row are indices of points
         that are vertices of triangle.
     title : str
-
+        Title of plot.
     zoom_slice : tuple of slices
         Crop from cube to show.
     colors : list or None
@@ -921,13 +921,13 @@ def show_3d(x, y, z, simplices, title, zoom_slice, colors=None, show_axes=True, 
     width, height : number
         Size of the image.
     margin : tuple of ints
-        Added margin for each axis, by default, (0, 0, 100).
+        Added margin for each axis, by default, (0, 0, 20).
     savepath : str
         Path to save interactive html to.
     images : list of tuples
         Each tuple is triplet of image, location and axis to load slide from seismic cube.
     resize_factor : float
-        Resize factor for seismic slides.
+        Resize factor for seismic slides. Is needed to spedify loading and ploting of seismic slices.
     colorscale : str
         Colormap for seismic slides.
     kwargs : dict

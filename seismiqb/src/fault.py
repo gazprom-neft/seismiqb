@@ -204,7 +204,7 @@ class Fault(Horizon):
             np.save(fault_path, fault[:, :3], allow_pickle=False)
 
     def show_3d(self, n_sticks=100, n_nodes=10, z_ratio=1., zoom_slice=None, show_axes=True,
-                width=1200, height=1200, margin=100, savepath=None, **kwargs):
+                width=1200, height=1200, margin=20, savepath=None, **kwargs):
         """ Interactive 3D plot. Roughly, does the following:
             - select `n` points to represent the horizon surface
             - triangulate those points
@@ -217,17 +217,15 @@ class Fault(Horizon):
             Number of sticks for each fault.
         n_nodes : int
             Number of nodes for each stick.
-        threshold : number
-            Threshold to remove triangles with bigger height differences in vertices.
-        z_ratio : number
+        z_ratio : int
             Aspect ratio between height axis and spatial ones.
-        zoom_slice : tuple of slices
-            Crop from cube to show.
+        zoom_slice : tuple of slices or None.
+            Crop from cube to show. If None, the whole cube volume will be shown.
         show_axes : bool
             Whether to show axes and their labels.
-        width, height : number
+        width, height : int
             Size of the image.
-        margin : number
+        margin : int
             Added margin from below and above along height axis.
         savepath : str
             Path to save interactive html to.
@@ -240,6 +238,7 @@ class Fault(Horizon):
         if zoom_slice is None:
             zoom_slice = [slice(0, i) for i in self.geometry.cube_shape]
         zoom_slice[-1] = slice(self.h_min, self.h_max)
+        margin = [margin] * 3 if isinstance(margin, int) else margin
         x, y, z, simplices = self.triangulation(n_sticks, n_nodes, zoom_slice)
 
         show_3d(x, y, z, simplices, title, zoom_slice, None, show_axes, aspect_ratio,
