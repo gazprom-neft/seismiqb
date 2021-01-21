@@ -16,7 +16,8 @@ argument-rgx=(.*[a-z][a-z0-9_]{1,30}|[a-z_])$ # snake_case + single letters
 disable=no-value-for-parameter, no-self-use, too-few-public-methods, unsubscriptable-object, no-method-argument,
         no-member, arguments-differ, len-as-condition, keyword-arg-before-vararg, too-many-locals, too-many-lines,
         logging-format-interpolation, no-name-in-module, import-error, cyclic-import, duplicate-code, import-self,
-        abstract-method, relative-beyond-top-level, unused-argument, too-many-public-methods, too-many-instance-attributes
+        abstract-method, relative-beyond-top-level, unused-argument, too-many-public-methods, too-many-instance-attributes,
+        invalid-name
 
 [TYPECHECK]
 ignored-modules=numpy, numba

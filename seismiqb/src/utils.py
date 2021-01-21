@@ -1,20 +1,13 @@
 """ Utility functions. """
-from math import isnan
-from collections import OrderedDict, defaultdict
-from threading import RLock
-from functools import wraps
-from hashlib import blake2b
+from math import isnan, atan
 import inspect
 
 from tqdm import tqdm
 import numpy as np
 import pandas as pd
 import segyio
-import torch
-import torch.nn.functional as F
 
 from numba import njit, prange
-from ..batchflow import Sampler
 
 
 
@@ -23,206 +16,6 @@ def file_print(msg, path, mode='w'):
     # pylint: disable=redefined-outer-name
     with open(path, mode) as file:
         print(msg, file=file)
-
-
-
-class SafeIO:
-    """ Opens the file handler with desired `open` function, closes it at destruction.
-    Can log open and close actions to the `log_file`.
-    getattr, getitem and `in` operator are directed to the `handler`.
-    """
-    def __init__(self, path, opener=open, log_file=None, **kwargs):
-        self.path = path
-        self.log_file = log_file
-        self.handler = opener(path, **kwargs)
-
-        if self.log_file:
-            self._info(self.log_file, f'Opened {self.path}')
-
-    def _info(self, log_file, msg):
-        with open(log_file, 'a') as f:
-            f.write('\n' + msg)
-
-    def __getattr__(self, key):
-        return getattr(self.handler, key)
-
-    def __getitem__(self, key):
-        return self.handler[key]
-
-    def __contains__(self, key):
-        return key in self.handler
-
-    def __del__(self):
-        self.handler.close()
-
-        if self.log_file:
-            self._info(self.log_file, f'Closed {self.path}')
-
-
-class IndexedDict(OrderedDict):
-    """ Allows to use both indices and keys to subscript. """
-    def __getitem__(self, key):
-        if isinstance(key, int):
-            key = list(self.keys())[key]
-        return super().__getitem__(key)
-
-def stable_hash(key):
-    """ Hash that stays the same between different runs of Python interpreter. """
-    if not isinstance(key, (str, bytes)):
-        key = ''.join(sorted(str(key)))
-    if not isinstance(key, bytes):
-        key = key.encode('ascii')
-    return str(blake2b(key).hexdigest())
-
-def flatten_nested(iterable):
-    """ Recursively flatten nested structure of tuples, list and dicts. """
-    result = []
-    if isinstance(iterable, (tuple, list)):
-        for item in iterable:
-            result.extend(flatten_nested(item))
-    elif isinstance(iterable, dict):
-        for key, value in sorted(iterable.items()):
-            result.extend((*flatten_nested(key), *flatten_nested(value)))
-    else:
-        return (iterable,)
-    return tuple(result)
-
-class Singleton:
-    """ There must be only one! """
-    instance = None
-    def __init__(self):
-        if not Singleton.instance:
-            Singleton.instance = self
-
-class lru_cache:
-    """ Thread-safe least recent used cache. Must be applied to class methods.
-    Adds the `use_cache` argument to the decorated method to control whether the caching logic is applied.
-    Stored values are individual for each instance of the class.
-
-    Parameters
-    ----------
-    maxsize : int
-        Maximum amount of stored values.
-    attributes: None, str or sequence of str
-        Attributes to get from object and use as additions to key.
-    apply_by_default : bool
-        Whether the cache logic is on by default.
-
-    Examples
-    --------
-    Always cache loaded slides except when `use_cache=False` is explicitly passed to method arguments:
-
-    >>> @lru_cache(maxsize=128)
-    >>> def load_slide(cube_name, slide_no):
-    >>>     pass
-
-    Only cache loaded slides when `use_cache=True` is explicitly passed to method arguments:
-
-    >>> @lru_cache(maxsize=128, apply_by_default=False)
-    >>> def load_slide(cube_name, slide_no):
-    >>>     pass
-
-    Notes
-    -----
-    On first call assigns an empty set to an instance attribute `_cached_attributes` to keep track of decorated methods.
-    """
-    #pylint: disable=invalid-name, attribute-defined-outside-init
-    def __init__(self, maxsize=None, attributes=None, apply_by_default=True):
-        self.maxsize = maxsize
-        self.apply_by_default = apply_by_default
-
-        # Make `attributes` always a list
-        if isinstance(attributes, str):
-            self.attributes = [attributes]
-        elif isinstance(attributes, (tuple, list)):
-            self.attributes = attributes
-        else:
-            self.attributes = False
-
-        self.default = Singleton()
-        self.lock = RLock()
-        self.reset()
-
-    def reset(self, instance=None):
-        """ Clear cache and stats. """
-        if instance is None:
-            self.cache = defaultdict(OrderedDict)
-            self.is_full = defaultdict(lambda: False)
-            self.stats = defaultdict(lambda: {'hit': 0, 'miss': 0})
-        else:
-            self.cache[instance] = OrderedDict()
-            self.is_full[instance] = False
-            self.stats[instance] = {'hit': 0, 'miss': 0}
-
-    def make_key(self, instance, args, kwargs):
-        """ Create a key from a combination of instance reference, method args, and instance attributes. """
-        key = [instance] + list(args)
-        if kwargs:
-            for k, v in sorted(kwargs.items()):
-                key.append((k, v))
-
-        if self.attributes:
-            for attr in self.attributes:
-                attr_hash = stable_hash(getattr(instance, attr))
-                key.append(attr_hash)
-
-        return flatten_nested(key)
-
-
-    def __call__(self, func):
-        """ Add the cache to the function. """
-        @wraps(func)
-        def wrapper(instance, *args, **kwargs):
-            # pylint: disable=protected-access
-            # Keep track of cached functions.
-            if not hasattr(instance, '_cached_attributes'):
-                setattr(instance, '_cached_attributes', set())
-            instance._cached_attributes.add(func.__name__)
-
-            # Parse the `use_cache`
-            if 'use_cache' in kwargs:
-                use_cache = kwargs.pop('use_cache')
-            else:
-                use_cache = self.apply_by_default
-
-            # Skip the caching logic and evaluate function directly
-            if not use_cache:
-                result = func(instance, *args, **kwargs)
-                return result
-
-            key = self.make_key(instance, args, kwargs)
-
-            # If result is already in cache, just retrieve it and update its timings
-            with self.lock:
-                result = self.cache[instance].get(key, self.default)
-                if result is not self.default:
-                    del self.cache[instance][key]
-                    self.cache[instance][key] = result
-                    self.stats[instance]['hit'] += 1
-                    return result
-
-            # The result was not found in cache: evaluate function
-            result = func(instance, *args, **kwargs)
-
-            # Add the result to cache
-            with self.lock:
-                self.stats[instance]['miss'] += 1
-                if key in self.cache[instance]:
-                    pass
-                elif self.is_full[instance]:
-                    self.cache[instance].popitem(last=False)
-                    self.cache[instance][key] = result
-                else:
-                    self.cache[instance][key] = result
-                    self.is_full[instance] = (len(self.cache[instance]) >= self.maxsize)
-            return result
-
-        wrapper.__name__ = func.__name__
-        wrapper.cache = lambda: self.cache
-        wrapper.stats = lambda: self.stats
-        wrapper.reset = self.reset
-        wrapper.reset_instance = lambda instance: self.reset(instance=instance)
-        return wrapper
 
 
 
@@ -430,7 +223,7 @@ def make_axis_grid(axis_range, stride, length, crop_shape):
         grid_ += [axis_range[1] - crop_shape]
     return sorted(grid_)
 
-def fill_defaults(value, default):
+def infer_tuple(value, default):
     """ Transform int or tuple with Nones to tuple with values from default.
 
     Parameters
@@ -457,18 +250,67 @@ def fill_defaults(value, default):
         value = tuple([item if item else default[i] for i, item in enumerate(value)])
     return value
 
-def parse_axis(axis, index_headers=None):
-    """ Convert string representation of an axis into integer, if needed. """
-    if isinstance(axis, str):
-        if index_headers and axis in index_headers:
-            axis = index_headers.index(axis)
-        elif axis in ['i', 'il', 'iline']:
-            axis = 0
-        elif axis in ['x', 'xl', 'xline']:
-            axis = 1
-        elif axis in ['h', 'height', 'depth']:
-            axis = 2
-    return axis
+def adjust_shape_2d(shape, angle):
+    """ Compute adjusted 2D crop shape to rotate it and get central crop without padding.
+
+    Parameters
+    ----------
+    shape : tuple
+        Target сrop shape.
+    angle : float
+
+    Returns
+    -------
+    tuple
+        Adjusted crop shape.
+    """
+    angle = abs(2 * np.pi * angle / 360)
+    limit = atan(shape[1] / shape[0])
+    x_max, y_max = shape
+    if angle != 0:
+        if angle < limit:
+            x_max = shape[0] * np.cos(angle) + shape[1] * np.sin(angle) + 1
+        else:
+            x_max = (shape[0] ** 2 + shape[1] ** 2) ** 0.5 + 1
+
+        if angle < np.pi / 2 - limit:
+            y_max = shape[0] * np.sin(angle) + shape[1] * np.cos(angle) + 1
+        else:
+            y_max = (shape[0] ** 2 + shape[1] ** 2) ** 0.5 + 1
+    return (int(np.ceil(x_max)), int(np.ceil(y_max)))
+
+def adjust_shape_3d(shape, angle_i, angle_x=0, angle_h=0, scale=(1, 1, 1)):
+    """ Compute adjusted 3D crop shape to rotate it and get central crop without padding. Adjustments is based on
+    proposition that rotation angles are defined as Tait-Bryan angles and scale performed before rotations.
+    The sequence of extrinsic rotations axes is (iline axis, xline axis, depth axis).
+
+    Parameters
+    ----------
+    shape : tuple
+        Target сrop shape.
+    angle_i : float
+        Rotation angle about iline axis.
+    angle_x : int, optional
+        Rotation angle about xline axis, by default 0.
+    angle_h : int, optional
+        Rotation angle about depth axis, by default 0.
+    scale : int or tuple, optional
+        Scale for each axis
+
+    Returns
+    -------
+    tuple
+        Adjusted crop shape.
+    """
+    shape = np.ceil(np.array(shape) / np.array(scale)).astype(int)
+    i_shape, x_shape, h_shape = shape
+    if angle_h != 0:
+        i_shape, x_shape = adjust_shape_2d((i_shape, x_shape), angle_h)
+    if angle_x != 0:
+        i_shape, h_shape = adjust_shape_2d((i_shape, h_shape), angle_x)
+    if angle_i != 0:
+        x_shape, h_shape = adjust_shape_2d((x_shape, h_shape), angle_i)
+    return (i_shape, x_shape, h_shape)
 
 @njit
 def groupby_mean(array):
@@ -673,15 +515,6 @@ def nb_mode(array, mask):
     return temp
 
 
-def make_gaussian_kernel(kernel_size=3, sigma=1.):
-    """ Create Gaussian kernel with given parameters. """
-    ax = np.linspace(-(kernel_size - 1) / 2., (kernel_size - 1) / 2., kernel_size)
-    x_points, y_points = np.meshgrid(ax, ax)
-    kernel = np.exp(-0.5 * (np.square(x_points) + np.square(y_points)) / np.square(sigma))
-    gaussian_kernel = (kernel / np.sum(kernel).astype(np.float32))
-    return gaussian_kernel
-
-
 @njit
 def filter_simplices(simplices, points, matrix, threshold=5.):
     """ Remove simplices outside of matrix. """
@@ -702,74 +535,61 @@ def filter_simplices(simplices, points, matrix, threshold=5.):
     return simplices[mask == 1]
 
 
-class HorizonSampler(Sampler):
-    """ Compact version of histogram-based sampler for 3D points structure. """
-    def __init__(self, histogram, seed=None, **kwargs):
-        super().__init__(histogram, seed, **kwargs)
-        # Bins and their probabilities: keep only non-zero ones
-        bins = histogram[0]
-        probs = (bins / np.sum(bins)).reshape(-1)
-        self.nonzero_probs_idx = np.asarray(probs != 0.0).nonzero()[0]
-        self.nonzero_probs = probs[self.nonzero_probs_idx]
-
-        # Edges of bins: keep lengths and diffs between successive edges
-        self.edges = histogram[1]
-        self.lens_edges = np.array([len(edge) - 1 for edge in self.edges])
-        self.divisors = [np.array(self.lens_edges[i+1:]).astype(np.int64)
-                         for i, _ in enumerate(self.edges)]
-        self.shifts_edges = [np.diff(edge)[0] for edge in self.edges]
-
-        # Uniform sampler
-        self.state = np.random.RandomState(seed=seed)
-        self.state_sampler = self.state.uniform
-
-    def sample(self, size):
-        """ Generate random sample from histogram distribution. """
-        # Choose bin indices
-        indices = np.random.choice(self.nonzero_probs_idx, p=self.nonzero_probs, size=size)
-
-        # Convert bin indices to its starting coordinates
-        low = generate_points(self.edges, divisors=self.divisors, lengths=self.lens_edges, indices=indices)
-        high = low + self.shifts_edges
-        return self.state_sampler(low=low, high=high)
+@njit(parallel=True)
+def attr_filter(array, result, window, stride, points, attribute='semblance'):
+    """ Compute semblance for the cube. """
+    l = points.shape[0]
+    for index in prange(l): # pylint: disable=not-an-iterable
+        i, j, k = points[index]
+        if (i % stride[0] == 0) and (j % stride[1] == 0) and (k % stride[2] == 0):
+            region = array[
+                max(i - window[0] // 2, 0):min(i + window[0] // 2 + window[0] % 2, array.shape[0]),
+                max(j - window[1] // 2, 0):min(j + window[1] // 2 + window[1] % 2, array.shape[1]),
+                max(k - window[2] // 2, 0):min(k + window[2] // 2 + window[2] % 2, array.shape[2])
+            ]
+            if attribute == 'semblance':
+                val = semblance(region.copy())
+            elif attribute == 'semblance_2':
+                val = semblance_2(region.copy())
+            elif attribute == 'corr':
+                val = local_correlation(region.copy())
+            result[i // stride[0], j // stride[1], k // stride[2]] = val
+    return result
 
 @njit
-def generate_points(edges, divisors, lengths, indices):
-    """ Accelerate sampling method of `HorizonSampler`. """
-    low = np.zeros((len(indices), len(lengths)))
+def semblance(region):
+    """ Marfurt semblance based on paper Marfurt et al.
+    `3-D seismic attributes using a semblance-based coherency algorithm
+    <http://mcee.ou.edu/aaspi/publications/1998/marfurt_etal_GPHY1998b.pdf>`__. """
+    denum = np.sum(region**2) * region.shape[0] * region.shape[1]
+    if denum != 0:
+        return ((np.sum(np.sum(region, axis=0), axis=0)**2).sum()) / denum
+    return 0.
 
-    for i, idx in enumerate(indices):
-        for j, (edge, divisors_, length) in enumerate(zip(edges, divisors, lengths)):
-            idx_copy = idx
-            for divisor in divisors_:
-                idx_copy //= divisor
-            low[i, j] = edge[idx_copy % length]
-    return low
+@njit(parallel=True)
+def semblance_2(region):
+    """ Marfurt semblance v2. """
+    region = region.reshape(-1, region.shape[-1])
+    covariation = region.dot(region.T)
+    s = 0.
+    for i in prange(covariation.shape[0]): # pylint: disable=not-an-iterable
+        s += covariation[i, i]
+    if s != 0:
+        return covariation.sum() / (s * len(region))
+    return 0.
 
-def compute_attribute(array, window, device='cuda:0', attribute='semblance'):
-    """ Compute semblance for the cube. """
-    if isinstance(window, int):
-        window = np.ones(3, dtype=np.int32) * window
-    window = np.minimum(np.array(window), array.shape)
-
-    inputs = torch.Tensor(array).to(device)
-    inputs = inputs.view(1, 1, *inputs.shape)
-    padding = [(w // 2, w - w // 2 - 1) for w in window]
-
-    num = F.pad(inputs, (0, 0, *padding[1], *padding[0], 0, 0, 0, 0))
-    num = F.conv3d(num, torch.ones((1, 1, window[0], window[1], 1), dtype=torch.float32).to(device)) ** 2
-    num = F.pad(num, (*padding[2], 0, 0, 0, 0, 0, 0, 0, 0))
-    num = F.conv3d(num, torch.ones((1, 1, 1, 1, window[2]), dtype=torch.float32).to(device))
-
-    denum = F.pad(inputs, (*padding[2], *padding[1], *padding[0], 0, 0, 0, 0))
-    denum = F.conv3d(denum ** 2, torch.ones((1, 1, *window), dtype=torch.float32).to(device))
-
-    normilizing = torch.ones(inputs.shape[:-1], dtype=torch.float32).to(device)
-    normilizing = F.pad(normilizing, (*padding[1], *padding[0], 0, 0, 0, 0))
-    normilizing = F.conv2d(normilizing, torch.ones((1, 1, window[0], window[1]), dtype=torch.float32).to(device))
-
-    denum *= normilizing.view(*normilizing.shape, 1)
-    return np.nan_to_num((num / denum).cpu().numpy()[0, 0], nan=1.)
+@njit(parallel=True)
+def local_correlation(region):
+    """ Correlation in window. """
+    center = region[region.shape[0] // 2, region.shape[1] // 2]
+    corr = np.zeros((region.shape[0], region.shape[1]))
+    for i in range(region.shape[0]): # pylint: disable=not-an-iterable
+        for j in range(region.shape[1]):
+            cov = np.mean((center - np.mean(center)) * (region[i, j] - np.mean(region[i, j])))
+            den = np.std(center) / np.std(region[i, j])
+            if den != 0:
+                corr[i, j] = cov / den
+    return np.mean(corr)
 
 def retrieve_function_arguments(function, dictionary):
     """ Retrieve both positional and keyword arguments for a passed `function` from a `dictionary`.

@@ -7,18 +7,20 @@ from itertools import product
 
 import numpy as np
 import pandas as pd
+import h5py
 from numba import njit, prange
 
-import cv2
+from cv2 import dilate
 from scipy.ndimage.morphology import binary_fill_holes, binary_erosion
 from scipy.ndimage import find_objects
 from scipy.spatial import Delaunay
 from scipy.signal import hilbert
 from skimage.measure import label
 
-from .hdf5_storage import StorageHDF5
-from .utils import round_to_array, groupby_mean, groupby_min, groupby_max, HorizonSampler, filter_simplices, lru_cache
-from .utils import make_gaussian_kernel, retrieve_function_arguments
+from .utility_classes import HorizonSampler, lru_cache
+from .utils import round_to_array, groupby_mean, groupby_min, groupby_max, filter_simplices
+from .utils import retrieve_function_arguments
+from .functional import smooth_out
 from .plotters import plot_image, show_3d
 
 
@@ -823,7 +825,7 @@ class Horizon:
         self.points = self.points[mask_i + mask_x]
         self.reset_storage('matrix')
 
-    def smooth_out(self, kernel_size=3, sigma=0.8, iters=1, preserve_borders=True, **kwargs):
+    def smooth_out(self, kernel=None, kernel_size=3, sigma=0.8, iters=1, preserve_borders=True, margin=5, **kwargs):
         """ Convolve the horizon with gaussian kernel with special treatment to absent points:
         if the point was present in the original horizon, then it is changed to a weighted sum of all
         present points nearby;
@@ -832,6 +834,8 @@ class Horizon:
 
         Parameters
         ----------
+        kernel : ndarray or None
+            If passed, then ready-to-use kernel. Otherwise, gaussian kernel will be created.
         kernel_size : int
             Size of gaussian filter.
         sigma : number
@@ -842,20 +846,11 @@ class Horizon:
         preserve_borders : bool
             Whether or not to allow method label additional points.
         """
-        def smoothing_function(src, **kwds):
-            _ = kwds
-            gaussian_kernel = make_gaussian_kernel(kernel_size, sigma)
-
-            smoothed = src
-            for _ in range(iters):
-                smoothed = _smoothing_function(smoothed, gaussian_kernel, self.FILL_VALUE, False, np.inf)
-                smoothed = np.rint(smoothed).astype(np.int32)
-
-            if preserve_borders:
-                # pylint: disable=invalid-unary-operand-type
-                idx_i, idx_x = np.asarray(~self.filled_matrix).nonzero()
-                smoothed[idx_i, idx_x] = self.FILL_VALUE
-            return smoothed
+        def smoothing_function(matrix):
+            smoothed = smooth_out(matrix, kernel=kernel,
+                                  kernel_size=kernel_size, sigma=sigma, margin=margin,
+                                  fill_value=self.FILL_VALUE, preserve=preserve_borders, iters=iters)
+            return np.rint(smoothed).astype(np.int32)
 
         self.apply_to_matrix(smoothing_function, **kwargs)
 
@@ -882,7 +877,7 @@ class Horizon:
         else:
             points = self.points
 
-        self.sampler = HorizonSampler(np.histogramdd(points/self.cube_shape, bins=bins))
+        self.sampler = HorizonSampler(np.histogramdd(points/self.cube_shape, bins=bins), **kwargs)
 
     def add_to_mask(self, mask, locations=None, width=3, alpha=1, **kwargs):
         """ Add horizon to a background.
@@ -949,7 +944,7 @@ class Horizon:
             For 'shift-rescale` normalization mode.
         """
 
-        if normalize is None and fill_value is None:
+        if not normalize and fill_value is None:
             return array
 
         values = array[self.presence_matrix]
@@ -1271,7 +1266,7 @@ class Horizon:
 
         # Parameters for different orientation
         if orientation.startswith('i'):
-            cube_hdf5 = self.geometry.file_hdf5['cube_i']
+            cube_hdf5 = self.geometry.file_hdf5['cube']
             slide_transform = lambda array: array
 
             hor_line = np.squeeze(self.matrix[line, :])
@@ -1441,13 +1436,35 @@ class Horizon:
         grad[self.matrix == self.FILL_VALUE] = self.FILL_VALUE
         return grad
 
-    def make_float_matrix(self, kernel=None, kernel_size=7, sigma=2., margin=5):
+    def make_float_matrix(self, kernel=None, kernel_size=7, sigma=2., margin=5, iters=1):
         """ Smooth the depth matrix to produce floating point numbers. """
-        kernel = kernel if kernel is not None else make_gaussian_kernel(kernel_size, sigma)
-        float_matrix = _smoothing_function(self.full_matrix, kernel,
-                                           fill_value=self.FILL_VALUE,
-                                           preserve=True, margin=margin)
+        float_matrix = smooth_out(self.full_matrix, kernel=kernel,
+                                  kernel_size=kernel_size, sigma=sigma, margin=margin,
+                                  fill_value=self.FILL_VALUE, preserve=True, iters=iters)
         return float_matrix
+
+    def enlarge_carcass_image(self, image, width=10):
+        """ Increase visibility of a sparse carcass metric. """
+        # Convert all the nans to a number, so that `dilate` can work with it
+        image = image.copy()
+        image[np.isnan(image)] = self.FILL_VALUE
+
+        # Apply dilations along both axis
+        structure = np.ones((1, 3), dtype=np.uint8)
+        dilated1 = dilate(image, structure, iterations=width)
+        dilated2 = dilate(image, structure.T, iterations=width)
+
+        # Mix matrices
+        image = np.full_like(image, np.nan)
+        image[dilated1 != self.FILL_VALUE] = dilated1[dilated1 != self.FILL_VALUE]
+        image[dilated2 != self.FILL_VALUE] = dilated2[dilated2 != self.FILL_VALUE]
+
+        mask = (dilated1 != self.FILL_VALUE) & (dilated2 != self.FILL_VALUE)
+        image[mask] = (dilated1[mask] + dilated2[mask]) / 2
+
+        # Fix zero traces
+        image[np.isnan(self.geometry.std_matrix)] = np.nan
+        return image
 
     # Evaluate horizon on its own / against other(s)
     def evaluate(self, compute_metric=True, supports=50, plot=True, savepath=None, printer=print, **kwargs):
@@ -1693,8 +1710,8 @@ class Horizon:
 
         # Enlarge the image to account for adjacency
         kernel = np.ones((3, 3), np.float32)
-        dilated_background = cv2.dilate(background.astype(np.float32), kernel,
-                                        iterations=adjacency).astype(np.int32)
+        dilated_background = dilate(background.astype(np.float32), kernel,
+                                    iterations=adjacency).astype(np.int32)
 
         # Make counts: number of horizons in each point; create indices of overlap
         counts = (dilated_background != 0).astype(np.int32)
@@ -1890,9 +1907,8 @@ class Horizon:
         points = self.cubic_to_lines(points)
         self.dump_charisma(points, path, transform, add_height)
 
-    def dump_points(self, path, fmt='npy', projections='ixh'):
+    def dump_points(self, path, fmt='npy'):
         """ Dump points. """
-
         if fmt == 'npy':
             if os.path.exists(path):
                 points = np.load(path, allow_pickle=False)
@@ -1901,18 +1917,37 @@ class Horizon:
                 points = self.points
             np.save(path, points, allow_pickle=False)
         elif fmt == 'hdf5':
-            file_hdf5 = StorageHDF5(path, mode='a', projections=projections, shape=self.cube_shape)
+            file_hdf5 = h5py.File(path, "a")
+            if 'cube' not in file_hdf5:
+                cube_hdf5 = file_hdf5.create_dataset('cube', self.geometry.cube_shape)
+                cube_hdf5_x = file_hdf5.create_dataset('cube_x', self.geometry.cube_shape[[1, 2, 0]])
+                cube_hdf5_h = file_hdf5.create_dataset('cube_h', self.geometry.cube_shape[[2, 0, 1]])
+            else:
+                cube_hdf5 = file_hdf5['cube']
+                cube_hdf5_x = file_hdf5['cube_x']
+                cube_hdf5_h = file_hdf5['cube_h']
+
             shape = (self.i_length, self.x_length, self.h_max - self.h_min + 1)
             fault_array = np.zeros(shape)
+
             points = self.points - np.array([self.i_min, self.x_min, self._h_min])
             fault_array[points[:, 0], points[:, 1], points[:, 2]] = 1
 
-            slices = (slice(self.i_min, self.i_max+1), slice(self.x_min,self.x_max+1), slice(self.h_min, self.h_max+1))
+            cube_hdf5[self.i_min:self.i_max+1, self.x_min:self.x_max+1, self.h_min:self.h_max+1] += fault_array
 
-            file_hdf5[slices] += fault_array
+            cube_hdf5_x[
+                self.x_min:self.x_max+1,
+                self.h_min:self.h_max+1,
+                self.i_min:self.i_max+1
+            ] += np.transpose(fault_array, (1, 2, 0))
 
-            path_meta = os.path.splitext(path)[0] + '.meta'
-            self.geometry.store_meta(path_meta)
+            cube_hdf5_h[
+                self.h_min:self.h_max+1,
+                self.i_min:self.i_max+1,
+                self.x_min:self.x_max+1
+            ] += np.transpose(fault_array, (2, 0, 1))
+
+            file_hdf5.close()
         else:
             raise ValueError('Unknown format:', fmt)
 
@@ -1955,7 +1990,7 @@ class Horizon:
         return background
 
 
-    def show(self, src='matrix', fill_value=None, on_full=True, **kwargs):
+    def show(self, src='matrix', fill_value=None, on_full=True, enlarge=True, width=3, **kwargs):
         """ Nice visualization of a horizon-related matrix. """
         matrix = getattr(self, src) if isinstance(src, str) else src
         fill_value = fill_value if fill_value is not None else self.FILL_VALUE
@@ -1964,6 +1999,9 @@ class Horizon:
             matrix = self.put_on_full(matrix=matrix, fill_value=fill_value)
         else:
             matrix = copy(matrix).astype(np.float32)
+
+        if self.is_carcass and enlarge:
+            matrix = self.enlarge_carcass_image(matrix, width)
 
         # defaults for plotting if not supplied in kwargs
         kwargs = {
@@ -2119,6 +2157,7 @@ class Horizon:
                                      matrix=self.full_matrix, threshold=threshold)
         return x, y, z, simplices
 
+
     def show_slide(self, loc, width=3, axis='i', order_axes=None, zoom_slice=None,
                    n_ticks=5, delta_ticks=100, **kwargs):
         """ Show slide with horizon on it.
@@ -2211,39 +2250,11 @@ class StructuredHorizon(Horizon):
 
 
 @njit(parallel=True)
-def _smoothing_function(src, kernel, fill_value, preserve=False, margin=33):
-    #pylint: disable=not-an-iterable
-    k1 = int(np.floor(kernel.shape[0] / 2))
-    k2 = int(np.floor(kernel.shape[1] / 2))
-    raveled_kernel = kernel.ravel() / np.sum(kernel)
-
-    dst = np.copy(src)
-    for iline in range(k1, src.shape[0]-k1):
-        for xline in prange(k2, src.shape[1]-k2):
-            central = src[iline, xline]
-            if preserve and central == fill_value:
-                continue
-
-            element = src[iline-k1:iline+k1+1, xline-k2:xline+k2+1]
-
-            s, sum_weights = 0.0, 0.0
-            for item, weight in zip(element.ravel(), raveled_kernel):
-                if item != fill_value:
-                    if abs(item - central) <= margin:
-                        s += item * weight
-                        sum_weights += weight
-
-            if sum_weights != 0.0:
-                val = s / sum_weights
-                dst[iline, xline] = val
-    return dst
-
-@njit
 def _filtering_function(points, filtering_matrix):
-    #pylint: disable=consider-using-enumerate
+    #pylint: disable=consider-using-enumerate, not-an-iterable
     mask = np.ones(len(points), dtype=np.int32)
 
-    for i in range(len(points)):
+    for i in prange(len(points)):
         il, xl = points[i, 0], points[i, 1]
         if filtering_matrix[il, xl] == 1:
             mask[i] = 0
