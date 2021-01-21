@@ -30,7 +30,7 @@ def triangle_rasterization(points, width=1):
                     i += 1
     return _points[:i]
 
-def triangulation(points, return_indices=False):
+def make_triangulation(points, return_indices=False):
     """ Compute triangulation of the fault.
 
     Parameters

@@ -2096,13 +2096,13 @@ class Horizon:
             zoom_slice = [slice(0, i) for i in self.geometry.cube_shape]
         zoom_slice[-1] = slice(self.h_min, self.h_max)
 
-        x, y, z, simplices = self.triangulation(n_points, threshold, zoom_slice)
+        x, y, z, simplices = self.make_triangulation(n_points, threshold, zoom_slice)
 
         show_3d(x, y, z, simplices, title, zoom_slice, None, show_axes, aspect_ratio,
                 axis_labels, width, height, margin, savepath, **kwargs)
 
 
-    def triangulation(self, n_points, threshold, slices, **kwargs):
+    def make_triangulation(self, n_points, threshold, slices, **kwargs):
         """ Create triangultaion of horizon.
 
         Parameters

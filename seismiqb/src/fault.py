@@ -15,7 +15,7 @@ from sklearn.neighbors import NearestNeighbors
 
 from .geometry import SeismicGeometry
 from .horizon import Horizon
-from .triangulation import triangulation, triangle_rasterization
+from .triangulation import make_triangulation, triangle_rasterization
 from .plotters import show_3d
 
 
@@ -115,7 +115,7 @@ class Fault(Horizon):
     def interpolate_3d(self, sticks, **kwargs):
         """ Interpolate fault sticks as a surface. """
         width = kwargs.get('width', 1)
-        triangles = triangulation(sticks)
+        triangles = make_triangulation(sticks)
         points = []
         for triangle in triangles:
             res = triangle_rasterization(triangle, width)
@@ -215,12 +215,12 @@ class Fault(Horizon):
             zoom_slice = [slice(0, i) for i in self.geometry.cube_shape]
         zoom_slice[-1] = slice(self.h_min, self.h_max)
         margin = [margin] * 3 if isinstance(margin, int) else margin
-        x, y, z, simplices = self.triangulation(n_sticks, n_nodes, zoom_slice)
+        x, y, z, simplices = self.make_triangulation(n_sticks, n_nodes, zoom_slice)
 
         show_3d(x, y, z, simplices, title, zoom_slice, None, show_axes, aspect_ratio,
                 axis_labels, width, height, margin, savepath, **kwargs)
 
-    def triangulation(self, n_sticks, n_nodes, slices, **kwargs):
+    def make_triangulation(self, n_sticks, n_nodes, slices, **kwargs):
         """ Create triangultaion of fault.
 
         Parameters
@@ -245,7 +245,7 @@ class Fault(Horizon):
         if len(points) <= 3:
             return None, None, None, None
         sticks = get_sticks(points, n_sticks, n_nodes)
-        simplices = triangulation(sticks, True)
+        simplices = make_triangulation(sticks, True)
         coords = np.concatenate(sticks)
         return coords[:, 0], coords[:, 1], coords[:, 2], simplices
 
@@ -399,7 +399,7 @@ def get_sticks(points, n_sticks, n_nodes):
     res = []
 
     for p in projections:
-        points_ = thick(p).astype(int)
+        points_ = thicken_line(p).astype(int)
         loc = p[0, axis]
         if len(points_) > 3:
             nodes = approximate_points(points_[:, [1-axis, 2]], n_nodes)
@@ -409,7 +409,7 @@ def get_sticks(points, n_sticks, n_nodes):
             res += [nodes_]
     return res
 
-def thick(points):
+def thicken_line(points):
     """ Make thick line. """
     points = points[np.argsort(points[:, -1])]
     splitted = np.split(points, np.unique(points[:, -1], return_index=True)[1][1:])
