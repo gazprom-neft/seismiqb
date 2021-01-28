@@ -783,7 +783,7 @@ class SeismicCubeset(Dataset):
                           'geometry': horizon.geometry}
 
 
-    def assemble_crops(self, crops, grid_info='grid_info', order=None, fill_value=0, agg_fn=np.maximum):
+    def assemble_crops(self, crops, grid_info='grid_info', order=None, fill_value=0):
         """ Glue crops together in accordance to the grid.
 
         Note
@@ -840,7 +840,7 @@ class SeismicCubeset(Dataset):
             crop = np.transpose(crops[j], order)
             crop = crop[crop_slice]
             previous = background[background_slice]
-            background[background_slice] = agg_fn(crop, previous)
+            background[background_slice] = np.maximum(crop, previous)
 
         return background
 
