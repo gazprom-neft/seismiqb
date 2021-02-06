@@ -30,20 +30,26 @@ def triangle_rasterization(points, width=1):
                     i += 1
     return _points[:i]
 
-def triangulation(points):
+def make_triangulation(points, return_indices=False):
     """ Compute triangulation of the fault.
 
     Parameters
     ----------
     points : numpy.ndarray
-        array of sticks
+        Array of sticks. Each item of array is a stick: sequence of 3D points.
+    return_indices : bool
+        If True, function will return indices of stick nodes in flatten array.
 
     Return
     ------
     numpy.ndarray
-        triangultaion
+        numpy.ndarray of length N where N is the number of simplices. Each item is a sequence of coordinates of each
+        vertex (if `return_indices=False`) or indices of nodes in initial flatten array.
     """
     triangles = []
+    if return_indices:
+        n_points = np.cumsum([0, *[len(item) for item in points]])
+        points = np.array([np.arange(len(points[i])) + n_points[i] for i in range(len(points))])
     for s1, s2 in zip(points[:-1], points[1:]):
         if len(s1) > len(s2):
             s1, s2 = s2, s1

@@ -1,9 +1,12 @@
 """ Plot functions. """
 import numpy as np
+import cv2
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import ColorConverter
 
+import plotly
+import plotly.figure_factory as ff
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -48,7 +51,7 @@ def convert_kwargs(mode, backend, kwargs):
     """
     if backend == 'matplotlib':
         # make conversion-dict for kwargs-keys
-        if mode in ['single', 'rgb', 'overlap', 'histogram', 'curve', 'histogram']:
+        if mode in ['single', 'rgb', 'overlap', 'histogram', 'curve', 'histogram', 'wiggle']:
             keys_converter = {'title': 'label', 't':'label'}
         elif mode in ['separate']:
             keys_converter = {'title': 't', 'label': 't'}
@@ -104,11 +107,11 @@ def plot_image(image, mode='single', backend='matplotlib', **kwargs):
     """
     convert_kwargs(mode, backend, kwargs)
     if backend in ('matplotlib', 'plt', 'mpl', 'm', 'mp'):
-        getattr(MatplotlibPlotter(), mode)(image, **kwargs)
-    elif backend in ('plotly', 'go'):
-        getattr(PlotlyPlotter(), mode)(image, **kwargs)
-    else:
-        raise ValueError('{} backend is not supported!'.format(backend))
+        return getattr(MatplotlibPlotter(), mode)(image, **kwargs)
+    if backend in ('plotly', 'go'):
+        return getattr(PlotlyPlotter(), mode)(image, **kwargs)
+
+    raise ValueError('{} backend is not supported!'.format(backend))
 
 
 def plot_loss(*data, title=None, **kwargs):
@@ -126,7 +129,7 @@ class MatplotlibPlotter:
     """ Plotting backend for matplotlib.
     """
     @staticmethod
-    def save_and_show(fig, show=True, savepath=None, **kwargs):
+    def save_and_show(fig, show=True, savepath=None, return_figure=False, **kwargs):
         """ Save and show plot if needed.
         """
         save_kwargs = dict(bbox_inches='tight', pad_inches=0, dpi=100)
@@ -139,6 +142,10 @@ class MatplotlibPlotter:
             fig.show()
         else:
             plt.close()
+
+        if return_figure:
+            return fig
+        return None
 
     def single(self, image, **kwargs):
         """ Plot single image/heatmap using matplotlib.
@@ -227,7 +234,109 @@ class MatplotlibPlotter:
         if kwargs.get('disable_axes'):
             ax.set_axis_off()
 
+        return self.save_and_show(fig, **updated)
+
+
+    def wiggle(self, image, **kwargs):
+        """ Make wiggle plot of an image. If needed overlap the wiggle plot with a curve supplied by an
+        array of heights.
+
+        Parameters
+        ----------
+        image : np.ndarray or list
+            either 2d-array or a list of 2d-array and a 1d-curve to plot atop the array.
+        kwargs : dict
+            figsize : tuple
+                tuple of two ints containing the size of the rendered image.
+            label : str
+                title of rendered image.
+            xlabel : str
+                xaxis-label.
+            ylabel : str
+                yaxis-label.
+            title : str
+                title of the plot.
+            reverse : bool
+                whether to reverse the plot in y-axis. True by default. In that
+                way, uses the same orientation as other modes.
+            other
+        """
+        defaults = {'figsize': (12, 7),
+                    'line_color': 'k',
+                    'label': '', 'xlabel': '', 'ylabel': '', 'title': '',
+                    'fontsize': 20,
+                    'width_multiplier': 2,
+                    'xstep': 5,
+                    'points_marker': 'ro',
+                    'reverse': True}
+
+        # deal with kwargs
+        updated = {**defaults, **kwargs}
+        line_color, xstep, width_mul, points_marker, reverse = [updated[key] for key in (
+            'line_color', 'xstep', 'width_multiplier', 'points_marker', 'reverse')]
+
+        figure_kwargs = filter_kwargs(updated, ['figsize', 'facecolor', 'dpi'])
+        label_kwargs = filter_kwargs(updated, ['label', 'y', 'fontsize', 'family', 'color'])
+        xaxis_kwargs = filter_kwargs(updated, ['xlabel', 'fontsize', 'family', 'color'])
+        yaxis_kwargs = filter_kwargs(updated, ['ylabel', 'fontsize', 'family', 'color'])
+
+        # parse image arg
+        with_curve = False
+        if isinstance(image, (list, tuple)):
+            if len(image) > 1:
+                with_curve = True
+                image, heights = image[:2]
+
+                # transform height-mask to heights if needed
+                if heights.ndim == 2:
+                    heights = np.where(heights)[1]
+            else:
+                image = image[0]
+
+        # Create figure and axes
+        if 'ax' in kwargs:
+            ax = kwargs['ax']
+            fig = ax.figure
+        else:
+            fig, ax = plt.subplots(**figure_kwargs)
+
+        # add titles and labels
+        ax.set_title(**label_kwargs)
+        ax.set_xlabel(**xaxis_kwargs)
+        ax.set_ylabel(**yaxis_kwargs)
+
+        # Creating wiggle-curves and adding height-points if needed
+        xlim_curr = (0, len(image))
+        ylim_curr = (0, len(image[0]))
+        offsets = np.arange(*xlim_curr, xstep)
+
+        if isinstance(line_color, str):
+            line_color = [line_color] * len(offsets)
+
+        y = np.arange(*ylim_curr)
+        if reverse:
+            y = y[::-1]
+        for ix, k in enumerate(offsets):
+            x = k + width_mul * image[k, slice(*ylim_curr)] / np.std(image)
+            col = line_color[ix]
+            ax.plot(x, y, '{}-'.format(col))
+            ax.fill_betweenx(y, k, x, where=(x > k), color=col)
+
+            if with_curve:
+                ax.plot(x[heights[ix]], heights[ix], points_marker)
+            if ix == 0:
+                xmin = np.min(x)
+            if ix == len(offsets) - 1:
+                xmax = np.max(x)
+
+        # adjust the canvas
+        xlim = updated.get('xlim', (xmin, xmax))
+        ylim = updated.get('ylim', (np.min(y), np.max(y)))
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+
         self.save_and_show(fig, **updated)
+
 
     def overlap(self, images, **kwargs):
         """ Plot several images on one canvas using matplotlib: render the first one in greyscale
@@ -308,7 +417,7 @@ class MatplotlibPlotter:
                       extent=extent, **render_kwargs)
         plt.title(**label_kwargs)
 
-        self.save_and_show(fig, **updated)
+        return self.save_and_show(fig, **updated)
 
     def rgb(self, image, **kwargs):
         """ Plot one image in 'rgb' using matplotlib.
@@ -358,7 +467,7 @@ class MatplotlibPlotter:
         plt.ylabel(**yaxis_kwargs)
         plt.tick_params(**tick_params)
 
-        self.save_and_show(plt, **updated)
+        return self.save_and_show(plt, **updated)
 
     def separate(self, images, **kwargs):
         """ Plot several images on a row of canvases using matplotlib.
@@ -410,6 +519,10 @@ class MatplotlibPlotter:
         for i, img in enumerate(images):
             args = {key: (value[i] if isinstance(value, list) else value)
                     for key, value in render_kwargs.items()}
+            cm = plt.get_cmap(args['cmap'])
+            cm.set_bad(color=updated.get('bad_color', updated.get('fill_color', 'white')))
+            args['cmap'] = cm
+
             ax[i].imshow(np.transpose(img.squeeze(), axes=updated['order_axes']), **args)
 
             ax[i].set_xlabel(**xaxis_kwargs)
@@ -418,7 +531,7 @@ class MatplotlibPlotter:
 
         fig.suptitle(**label_kwargs)
 
-        self.save_and_show(plt, **updated)
+        return self.save_and_show(plt, **updated)
 
     def histogram(self, image, **kwargs):
         """ Plot histogram using matplotlib.
@@ -467,7 +580,7 @@ class MatplotlibPlotter:
         plt.xlim(xaxis_kwargs.get('xlim'))  # these are positional ones
         plt.ylim(yaxis_kwargs.get('ylim'))
 
-        self.save_and_show(plt, **updated)
+        return self.save_and_show(plt, **updated)
 
     def curve(self, curve, average=True, window=10, **kwargs):
         """ Plot a curve.
@@ -551,7 +664,7 @@ class MatplotlibPlotter:
         plt.title(**label_kwargs)
         plt.grid(updated['grid'])
 
-        self.save_and_show(plt, **updated)
+        return self.save_and_show(plt, **updated)
 
 
 
@@ -788,3 +901,104 @@ class PlotlyPlotter:
         fig.update_layout(**label_kwargs)
 
         self.save_and_show(fig, **updated)
+
+def show_3d(x, y, z, simplices, title, zoom_slice, colors=None, show_axes=True, aspect_ratio=(1, 1, 1),
+            axis_labels=None, width=1200, height=1200, margin=(0, 0, 20), savepath=None,
+            images=None, resize_factor=2, colorscale='Greys', **kwargs):
+    """ Interactive 3D plot for some elements of cube.
+
+    Parameters
+    ----------
+    x, y, z : numpy.ndarrays
+        Triangle vertices.
+    simplices : numpy.ndarray
+        (N, 3) array where each row represent triangle. Elements of row are indices of points
+        that are vertices of triangle.
+    title : str
+        Title of plot.
+    zoom_slice : tuple of slices
+        Crop from cube to show.
+    colors : list or None
+        List of colors for each simplex.
+    show_axes : bool
+        Whether to show axes and their labels.
+    aspect_ratio : tuple of floats.
+        Aspect ratio for each axis.
+    axis_labels : tuple
+        Titel for each axis.
+    width, height : number
+        Size of the image.
+    margin : tuple of ints
+        Added margin for each axis, by default, (0, 0, 20).
+    savepath : str
+        Path to save interactive html to.
+    images : list of tuples
+        Each tuple is triplet of image, location and axis to load slide from seismic cube.
+    resize_factor : float
+        Resize factor for seismic slides. Is needed to spedify loading and ploting of seismic slices.
+    colorscale : str
+        Colormap for seismic slides.
+    kwargs : dict
+        Other arguments of plot creation.
+    """
+    #pylint: disable=too-many-arguments
+    # Arguments of graph creation
+    kwargs = {
+        'title': title,
+        'colormap': plotly.colors.sequential.Viridis[::-1][:4],
+        'edges_color': 'rgb(70, 40, 50)',
+        'show_colorbar': False,
+        'width': width,
+        'height': height,
+        'aspectratio': {'x': aspect_ratio[0], 'y': aspect_ratio[1], 'z': aspect_ratio[2]},
+        **kwargs
+    }
+    if colors is not None:
+        fig = ff.create_trisurf(x=x, y=y, z=z, color_func=colors, simplices=simplices, **kwargs)
+    else:
+        fig = ff.create_trisurf(x=x, y=y, z=z, simplices=simplices, **kwargs)
+    if images is not None:
+        for image, loc, axis in images:
+            shape = image.shape
+            image = cv2.resize(image, tuple(np.array(shape) // resize_factor))[::-1]
+            grid = np.meshgrid(
+                np.linspace(0, shape[0], image.shape[0]),
+                np.linspace(0, shape[1], image.shape[1])
+            )
+            if axis == 0:
+                x, y, z = loc * np.ones_like(image), grid[0].T + zoom_slice[1].start, grid[1].T + zoom_slice[2].start
+            elif axis == 1:
+                y, x, z = loc * np.ones_like(image), grid[0].T + zoom_slice[0].start, grid[1].T + zoom_slice[2].start
+            else:
+                z, x, y = loc * np.ones_like(image), grid[0].T + zoom_slice[0].start, grid[1].T + zoom_slice[1].start
+            fig.add_surface(x=x, y=y, z=z, surfacecolor=np.flipud(image),
+                            showscale=False, colorscale='Greys')
+    # Update scene with title, labels and axes
+    fig.update_layout(
+        {
+            'scene': {
+                'xaxis': {
+                    'title': axis_labels[0] if show_axes else '',
+                    'showticklabels': show_axes,
+                    'range': [zoom_slice[0].stop + margin[0], zoom_slice[0].start - margin[0]]
+                },
+                'yaxis': {
+                    'title': axis_labels[1] if show_axes else '',
+                    'showticklabels': show_axes,
+                    'range': [zoom_slice[1].start + margin[1], zoom_slice[1].stop - margin[1]]
+                },
+                'zaxis': {
+                    'title': axis_labels[2] if show_axes else '',
+                    'showticklabels': show_axes,
+                    'range': [zoom_slice[2].stop + margin[2], zoom_slice[2].start - margin[2]]
+                },
+                'camera_eye': {
+                    "x": 1.25, "y": 1.5, "z": 1.5
+                },
+            }
+        }
+    )
+    fig.show()
+
+    if savepath:
+        fig.write_html(savepath)

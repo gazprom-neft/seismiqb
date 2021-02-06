@@ -613,17 +613,17 @@ class BaseController:
             .call(generate_shape, shape=C('crop_shape'),
                   dynamic_factor=dynamic_factor, dynamic_low=dynamic_low, dynamic_high=dynamic_high,
                   save_to=V('shape'))
-            .crop(points=D('train_sampler')(self.batch_size),
-                  shape=V('shape'),
-                  side_view=C('side_view', default=False),
-                  adaptive_slices=C('adaptive_slices'),
-                  grid_src=C('grid_src', default='quality_grid'))
+            .make_locations(points=D('train_sampler')(self.batch_size),
+                            shape=V('shape'),
+                            side_view=C('side_view', default=False),
+                            adaptive_slices=C('adaptive_slices'),
+                            grid_src=C('grid_src', default='quality_grid'))
 
             .create_masks(dst='masks', width=C('width', default=3))
             .mask_rebatch(src='masks', threshold=C('rebatch_threshold', default=0.1))
             .load_cubes(dst='images')
             .adaptive_reshape(src=['images', 'masks'], shape=V('shape'))
-            .scale(mode='q', src='images')
+            .normalize(mode='q', src='images')
         )
 
     def augmentation_pipeline(self, **kwargs):
@@ -682,11 +682,11 @@ class BaseController:
             .import_model('model', C('model_pipeline'))
 
             # Load data
-            .crop(points=D('grid_gen')(), shape=self.crop_shape,
-                  side_view=C('side_view', default=False))
+            .make_locations(points=D('grid_gen')(), shape=self.crop_shape,
+                            side_view=C('side_view', default=False))
             .load_cubes(dst='images')
             .adaptive_reshape(src='images', shape=self.crop_shape)
-            .scale(mode='q', src='images')
+            .normalize(mode='q', src='images')
 
             # Predict with model, then aggregate
             .predict_model('model',

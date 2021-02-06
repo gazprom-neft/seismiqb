@@ -1,4 +1,4 @@
-""" Seismic Crop Batch."""
+""" Seismic Crop Batch. """
 import string
 import random
 from copy import copy
@@ -15,7 +15,6 @@ from .horizon import Horizon
 from .plotters import plot_image
 
 
-
 AFFIX = '___'
 SIZE_POSTFIX = 12
 SIZE_SALT = len(AFFIX) + SIZE_POSTFIX
@@ -23,16 +22,20 @@ CHARS = string.ascii_uppercase + string.digits
 
 
 class SeismicCropBatch(Batch):
-    """ Batch with ability to generate 3d-crops of various shapes."""
+    """ Batch with ability to generate 3d-crops of various shapes. """
     components = None
     apply_defaults = {
         'target': 'for',
         'post': '_assemble'
     }
+    # When an attribute containing one of keywords from list it accessed via `get`, firstly search it in `self.dataset`.
+    DATASET_ATTRIBUTES = ['label', 'geom', 'fan', 'channel']
+
 
     def _init_component(self, *args, **kwargs):
         """ Create and preallocate a new attribute with the name ``dst`` if it
-        does not exist and return batch indices."""
+        does not exist and return batch indices.
+        """
         _ = args
         dst = kwargs.get("dst")
         if dst is None:
@@ -99,12 +102,13 @@ class SeismicCropBatch(Batch):
         return super().__getattr__(name)
 
     def get(self, item=None, component=None):
-        """ Custom access for batch attribures.
-        If `component` looks like `label` or `geometry`, then we retrieve that dictionary from
-        attached dataset and use unsalted version of `item` as key.
-        Otherwise, we get position of `item` in the current batch and use it to index sequence-like `component`.
+        """ Custom access for batch attributes.
+        If `component` has an entry from `DATASET_ATTRIBUTES` than retrieve it
+        from attached dataset and use unsalted version of `item` as key.
+        Otherwise, get position of `item` in the current batch and use it
+        to index sequence-like `component`.
         """
-        if sum([attribute in component for attribute in ['label', 'geom']]):
+        if any(attribute in component for attribute in self.DATASET_ATTRIBUTES):
             if isinstance(item, str) and self.has_salt(item):
                 item = self.unsalt(item)
             res = getattr(self, component)
@@ -122,10 +126,11 @@ class SeismicCropBatch(Batch):
         return getattr(self, component)
 
     @action
-    def crop(self, points, shape=None, direction=(0, 0, 0), side_view=False,
-             adaptive_slices=False, grid_src='quality_grid', eps=3,
-             dst='locations', passdown=None, dst_points='points', dst_shapes='shapes'):
-        """ Generate positions of crops. Creates new instance of `SeismicCropBatch`
+    def make_locations(self, points, shape=None, direction=(0, 0, 0), eps=3,
+                       side_view=False, adaptive_slices=False, passdown=None,
+                       grid_src='quality_grid', dst='locations',
+                       dst_points='points', dst_shapes='shapes'):
+        """ Generate positions of crops. Creates new instance of :class:`.SeismicCropBatch`
         with crop positions in one of the components (`locations` by default).
 
         Parameters
@@ -140,6 +145,8 @@ class SeismicCropBatch(Batch):
             as `points`, and each row contains a shape for corresponding point.
         direction : sequence of numbers
             Direction of the cut crop relative to the point. Must be a vector on unit cube.
+        eps : int
+            Initial length of slice, that is used to find the closest grid point.
         side_view : bool or float
             Determines whether to generate crops of transposed shape (xline, iline, height).
             If False, then shape is never transposed.
@@ -147,14 +154,12 @@ class SeismicCropBatch(Batch):
             If float, then shape is transposed with that probability.
         adaptive_slices: bool or str
             If True, then slices are created so that crops are cut only along the grid.
-        grid_src : str
-            Attribut of geometry to get the grid from.
-        eps : int
-            Initial length of slice, that is used to find the closest grid point.
-        dst : str, optional
-            Component of batch to put positions of crops in.
         passdown : str of list of str
             Components of batch to keep in the new one.
+        grid_src : str
+            Attribut of geometry to get the grid from.
+        dst : str, optional
+            Component of batch to put positions of crops in.
         dst_points, dst_shapes : str
             Components to put points and crop shapes in.
 
@@ -169,8 +174,6 @@ class SeismicCropBatch(Batch):
         SeismicCropBatch
             Batch with positions of crops in specified component.
         """
-        # pylint: disable=protected-access
-
         # Create all the points and shapes
         if isinstance(shape, dict):
             shape = {k: np.asarray(v) for k, v in shape.items()}
@@ -305,8 +308,6 @@ class SeismicCropBatch(Batch):
 
         Parameters
         ----------
-        src : str
-            Component of batch with positions of crops to load.
         dst : str
             Component of batch to put loaded crops in.
         slicing : str
@@ -323,29 +324,71 @@ class SeismicCropBatch(Batch):
             raise ValueError(f"slicing must be 'native' or 'custom' but {slicing} were given.")
         return crop
 
+    def get_nearest_horizon(self, ix, src_labels, heights_slice):
+        """ Get horizon with its `h_mean` closest to mean of `heights_slice`. """
+        location_h_mean = (heights_slice.start + heights_slice.stop) // 2
+        nearest_horizon_ind = np.argmin([abs(horizon.h_mean - location_h_mean) for horizon in self.get(ix, src_labels)])
+        return self.get(ix, src_labels)[nearest_horizon_ind]
+
+
     @action
     @inbatch_parallel(init='indices', post='_assemble', target='for')
-    def create_masks(self, ix, dst, src='locations', width=3, src_labels='labels', indices=-1):
+    def load_attribute(self, ix, dst, src_attribute=None, src_labels='labels',
+                       locations='locations', final_ndim=3, **kwargs):
+        """ Load attribute for depth-nearest label and crop in given locations.
+
+        Parameters
+        ----------
+        src_attribute : str
+            A keyword from :attr:`~Horizon.ATTRIBUTE_TO_METHOD` keys, defining label attribute to make crops from.
+        src_labels : str
+            Dataset attribute with labels dict.
+        locations : str
+            Component of batch with locations of crops to load.
+        final_ndim : 2 or 3
+            Number of dimensions returned crop should have.
+        kwargs :
+            Passed directly to either:
+            - one of attribute-evaluating methods from :attr:`~Horizon.ATTRIBUTE_TO_METHOD` depending on `src_attribute`
+            - or attribute-transforming method :meth:`~Horizon.transform_where_present`.
+
+        Notes
+        -----
+        This method loads rectified data, e.g. amplitudes are croped relative
+        to horizon and will form a straight plane in the resulting crop.
+        """
+        location = self.get(ix, locations)
+        nearest_horizon = self.get_nearest_horizon(ix, src_labels, location[2])
+        crop = nearest_horizon.load_attribute(src_attribute, location, **kwargs)
+        if final_ndim == 3 and crop.ndim == 2:
+            crop = crop[..., np.newaxis]
+        elif final_ndim != crop.ndim:
+            raise ValueError("Crop returned by `Horizon.get_attribute` has {} dimensions, but shape conversion "
+                             "to expected {} dimensions is not implemented.".format(crop.ndim, final_ndim))
+        return crop
+
+    @action
+    @inbatch_parallel(init='indices', post='_assemble', target='for')
+    def create_masks(self, ix, dst, src_labels='labels', src_locations='locations', use_labels='all', width=3):
         """ Create masks from labels-dictionary in given positions.
 
         Parameters
         ----------
-        src : str
-            Component of batch with positions of crops to load.
         dst : str
             Component of batch to put loaded masks in.
-        width : int
-            Width of horizons in the `horizon` mode.
         src_labels : str
-            Component of batch with labels dict.
-        indices : str, int or sequence of ints
-            A choice scenario of used labels per crop.
-            If -1 or 'all', all possible labels will be added.
-            If 1 or 'single', one random label will be added.
-            If array-like then elements are interpreted as indices of the desired labels
-            and must be ints in range [0, len(horizons) - 1].
-            Note if you want to pass an index of a single label it must be a list with one
-            element.
+            Dataset attribute with labels dict.
+        src_locations : str
+            Component of batch that stores locations of crops.
+        use_labels : str, int or sequence of ints
+            Which labels to use in mask creation.
+            If 'all', use all labels.
+            If 'single', use one random label.
+            If 'nearest' or 'nearest_to_center', use one label closest to height from `src_locations`.
+            If int or array-like then element(s) are interpreted as indices of
+            desired labels and must be ints in range [0, len(horizons) - 1].
+        width : int
+            How much to thicken the horizon.
 
         Returns
         -------
@@ -356,31 +399,27 @@ class SeismicCropBatch(Batch):
         -----
         Can be run only after labels-dict is loaded into labels-component.
         """
-        location = self.get(ix, src)
-        shape_ = self.get(ix, 'shapes')
-        mask = np.zeros((shape_), dtype='float32')
+        location = self.get(ix, src_locations)
+        crop_shape = self.get(ix, 'shapes')
+        mask = np.zeros(crop_shape, dtype='float32')
 
         labels = self.get(ix, src_labels) if isinstance(src_labels, str) else src_labels
         labels = [labels] if not isinstance(labels, (tuple, list)) else labels
         if len(labels) == 0:
             return mask
 
-        check_sum = False
-        if indices in [-1, 'all']:
-            indices = np.arange(0, len(labels))
-        elif indices in [1, 'single']:
-            indices = np.arange(0, len(labels))
-            np.random.shuffle(indices)
-            check_sum = True
-        elif isinstance(indices, int):
-            raise ValueError('Inidices should be either -1, 1 or a sequence of ints.')
-        elif isinstance(indices, (tuple, list, np.ndarray)):
-            pass
-        labels = [labels[idx] for idx in indices]
+        use_labels = [use_labels] if isinstance(use_labels, int) else use_labels
+
+        if isinstance(use_labels, (tuple, list, np.ndarray)):
+            labels = [labels[idx] for idx in use_labels]
+        elif use_labels == 'single':
+            np.random.shuffle(labels)
+        elif use_labels in ['nearest', 'nearest_to_center']:
+            labels = [self.get_nearest_horizon(ix, src_labels, location[2])]
 
         for label in labels:
             mask = label.add_to_mask(mask, locations=location, width=width)
-            if check_sum and np.sum(mask) > 0.0:
+            if use_labels == 'single' and np.sum(mask) > 0.0:
                 break
         return mask
 
@@ -495,26 +534,29 @@ class SeismicCropBatch(Batch):
 
     @action
     @inbatch_parallel(init='indices', post='_assemble', target='for')
-    def scale(self, ix, mode, src=None, dst=None):
-        """ Scale values in crop.
+    def normalize(self, ix, mode='minmax', src=None, dst=None):
+        """ Normalize values in crop.
 
         Parameters
         ----------
-        mode : str
-            If `minmax`, then data is scaled to [0, 1] via minmax scaling.
-            If `q` or `normalize`, then data is divided by the maximum of absolute values of the
-            0.01 and 0.99 quantiles.
-            If `q_clip`, then data is clipped to 0.01 and 0.99 quantiles and then divided by the
-            maximum of absolute values of the two.
+        mode : callable or str
+            If callable, then directly applied to data.
+            If str, then :meth:`~SeismicGeometry.scaler` applied in one of the modes:
+            - `minmax`: scaled to [0, 1] via minmax scaling.
+            - `q` or `normalize`: divided by the maximum of absolute values
+                                  of the 0.01 and 0.99 quantiles.
+            - `q_clip`: clipped to 0.01 and 0.99 quantiles and then divided
+                        by the maximum of absolute values of the two.
         """
         data = self.get(ix, src)
+        if callable(mode):
+            return mode(data)
         geometry = self.get(ix, 'geometries')
-        return geometry.scaler(data, mode)
+        return geometry.scaler(data, mode=mode)
 
 
     @action
-    @inbatch_parallel(init='_init_component', post='_assemble', target='for')
-    def concat_components(self, ix, src, dst, axis=-1):
+    def concat_components(self, src, dst, axis=-1):
         """ Concatenate a list of components and save results to `dst` component.
 
         Parameters
@@ -526,26 +568,39 @@ class SeismicCropBatch(Batch):
         axis : int
             The axis along which the arrays will be joined.
         """
+        if axis != -1:
+            raise NotImplementedError("For now function works for `axis=-1` only.")
         _ = dst
+
         if not isinstance(src, (list, tuple, np.ndarray)) or len(src) < 2:
             raise ValueError('Src must contain at least two components to concatenate')
-        result = []
-        for component in src:
-            result.append(self.get(ix, component))
-        return np.concatenate(result, axis=axis)
+        items = [self.get(None, attr) for attr in src]
+
+        depth = sum(item.shape[-1] for item in items)
+        final_shape = (*items[0].shape[:3], depth)
+        prealloc = np.empty(final_shape, dtype=np.float32)
+
+        start_depth = 0
+        for item in items:
+            depth_shift = item.shape[-1]
+            prealloc[..., start_depth:start_depth + depth_shift] = item
+            start_depth += depth_shift
+        setattr(self, dst, prealloc)
+        return self
+
 
     @action
     @inbatch_parallel(init='indices', target='for', post='_masks_to_horizons_post')
-    def masks_to_horizons(self, ix, src='masks', src_locations='locations', dst='predicted_labels', prefix='predict',
-                          threshold=0.5, mode='mean', minsize=0, mean_threshold=2.0, adjacency=1,
-                          order=(2, 0, 1), skip_merge=False):
+    def masks_to_horizons(self, ix, src_masks='masks', locations='locations', dst='predicted_labels',
+                          threshold=0.5, mode='mean', minsize=0, mean_threshold=2.0,
+                          adjacency=1, order=(2, 0, 1), skip_merge=False, prefix='predict'):
         """ Convert predicted segmentation mask to a list of Horizon instances.
 
         Parameters
         ----------
         src_masks : str
             Component of batch that stores masks.
-        src_locations : str
+        locations : str
             Component of batch that stores locations of crops.
         dst : str/object
             Component of batch to store the resulting horizons.
@@ -554,18 +609,18 @@ class SeismicCropBatch(Batch):
             Default value of (2, 0, 1) is applicable to standart pipeline with one `rotate_axes`
             applied to images-tensor.
         threshold, mode, minsize, mean_threshold, adjacency, prefix
-            Passed directly to `:meth:Horizon.from_mask`.
+            Passed directly to :meth:`Horizon.from_mask`.
         """
         _ = dst, mean_threshold, adjacency, skip_merge
 
         # Threshold the mask, transpose and rotate the mask if needed
-        mask = self.get(ix, src)
+        mask = self.get(ix, src_masks)
         if np.array(order).reshape(-1, 3).shape[0] > 0:
             order = self.get(ix, np.array(order).reshape(-1, 3))
         mask = np.transpose(mask, axes=order)
 
         geometry = self.get(ix, 'geometries')
-        shifts = [self.get(ix, src_locations)[k].start for k in range(3)]
+        shifts = [self.get(ix, locations)[k].start for k in range(3)]
         horizons = Horizon.from_mask(mask, geometry=geometry, shifts=shifts, threshold=threshold,
                                      mode=mode, minsize=minsize, prefix=prefix)
         return horizons
@@ -614,7 +669,7 @@ class SeismicCropBatch(Batch):
             Desired shape of resulting crops.
         """
         if (np.array(crop.shape) != np.array(shape)).any():
-            return crop.transpose([1, 0, 2])
+            return crop.transpose(1, 0, 2)
         return crop
 
     @apply_parallel
@@ -744,10 +799,14 @@ class SeismicCropBatch(Batch):
         structure = np.ones((1, 3), dtype=np.uint8)
         return cv2.dilate(mask_, structure, iterations=width)
 
-    @apply_parallel
-    def transpose(self, crop, order):
+    @action
+    def transpose(self, src, order):
         """ Change order of axis. """
-        return np.transpose(crop, order)
+        src = [src] if isinstance(src, str) else src
+        order = [i+1 for i in order] # Correct for batch items dimension
+        for attr in src:
+            setattr(self, attr, np.transpose(self.get(component=attr), (0, *order)))
+        return self
 
     @apply_parallel
     def rotate_axes(self, crop):
@@ -816,20 +875,36 @@ class SeismicCropBatch(Batch):
 
         copy_ = copy(crop)
         for _ in range(int(n)):
-            x_ = int(rnd(max(crop.shape[0] - patch_shape[0], 1)))
-            h_ = int(rnd(max(crop.shape[1] - patch_shape[1], 1)))
-            copy_[x_:x_+patch_shape[0], h_:h_+patch_shape[1], :] = 0
+            starts = [int(rnd(crop.shape[ax] - patch_shape[ax])) for ax in range(3)]
+            stops = [starts[ax] + patch_shape[ax] for ax in range(3)]
+            slices = [slice(start, stop) for start, stop in zip(starts, stops)]
+            copy_[slices] = 0
         return copy_
 
     @apply_parallel
     def rotate(self, crop, angle):
-        """ Rotate crop along the first two axes.
+        """ Rotate crop along the first two axes. Angles are defined as Tait-Bryan angles and the sequence of
+        extrinsic rotations axes is (axis_2, axis_0, axis_1).
 
         Parameters
         ----------
-        angle : float
-            Angle of rotation.
+        angle : float or tuple of floats
+            Angles of rotation about each axes (axis_2, axis_0, axis_1). If float, angle of rotation
+            about the last axis.
         """
+        angle = angle if isinstance(angle, (tuple, list)) else (angle, 0, 0)
+        crop = self._rotate(crop, angle[0])
+        if angle[1] != 0:
+            crop = crop.transpose(1, 2, 0)
+            crop = self._rotate(crop, angle[1])
+            crop = crop.transpose(2, 0, 1)
+        if angle[2] != 0:
+            crop = crop.transpose(2, 0, 1)
+            crop = self._rotate(crop, angle[2])
+            crop = crop.transpose(1, 2, 0)
+        return crop
+
+    def _rotate(self, crop, angle):
         shape = crop.shape
         matrix = cv2.getRotationMatrix2D((shape[1]//2, shape[0]//2), angle, 1)
         return cv2.warpAffine(crop, matrix, (shape[1], shape[0])).reshape(shape)
@@ -850,15 +925,38 @@ class SeismicCropBatch(Batch):
 
     @apply_parallel
     def scale_2d(self, crop, scale):
-        """ Zoom in or zoom out along the first two axes of crop.
+        """ Zoom in or zoom out along the first two axis.
 
         Parameters
         ----------
-        scale : float
-            Zooming factor.
+        scale : tuple or float
+            Zooming factor for the first two axis.
         """
+        scale = scale if isinstance(scale, (list, tuple)) else [scale] * 2
+        crop = self._scale(crop, [scale[0], scale[1]])
+        return crop
+
+    @apply_parallel
+    def scale(self, crop, scale):
+        """ Zoom in or zoom out along each axis of crop.
+
+        Parameters
+        ----------
+        scale : tuple or float
+            Zooming factor for each axis.
+        """
+        scale = scale if isinstance(scale, (list, tuple)) else [scale] * 3
+        crop = self._scale(crop, [scale[0], scale[1]])
+
+        crop = crop.transpose(1, 2, 0)
+        crop = self._scale(crop, [1, scale[-1]]).transpose(2, 0, 1)
+        return crop
+
+    def _scale(self, crop, scale):
         shape = crop.shape
-        matrix = cv2.getRotationMatrix2D((shape[1]//2, shape[0]//2), 0, scale)
+        matrix = np.zeros((2, 3))
+        matrix[:, :-1] = np.diag([scale[1], scale[0]])
+        matrix[:, -1] = np.array([shape[1], shape[0]]) * (1 - np.array([scale[1], scale[0]])) / 2
         return cv2.warpAffine(crop, matrix, (shape[1], shape[0])).reshape(shape)
 
     @apply_parallel
@@ -1014,6 +1112,16 @@ class SeismicCropBatch(Batch):
         """ Apply a gaussian filter along specified axis. """
         return gaussian_filter1d(crop, sigma=sigma, axis=axis, order=order)
 
+    @apply_parallel
+    def central_crop(self, crop, shape):
+        """ Central crop of defined shape. """
+        crop_shape = np.array(crop.shape)
+        shape = np.array(shape)
+        if (shape > crop_shape).any():
+            raise ValueError(f"shape can't be large then crop shape ({crop_shape}) but {shape} was given.")
+        corner = crop_shape // 2 - shape // 2
+        slices = tuple([slice(start, start+length) for start, length in zip(corner, shape)])
+        return crop[slices]
 
     def plot_components(self, *components, idx=0, slide=None, mode='overlap', order_axes=None, **kwargs):
         """ Plot components of batch.

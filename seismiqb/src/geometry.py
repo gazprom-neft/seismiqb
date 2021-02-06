@@ -16,8 +16,8 @@ import segyio
 import cv2
 from scipy.ndimage import zoom
 
-from .utils import lru_cache, find_min_max, file_print, \
-                   SafeIO, attr_filter, make_axis_grid, infer_tuple
+from .utils import find_min_max, file_print, attr_filter, make_axis_grid, infer_tuple
+from .utility_classes import lru_cache, SafeIO
 from .plotters import plot_image
 
 
@@ -216,6 +216,8 @@ class SeismicGeometry:
             value = self.load_meta_item(item)
             if value is not None:
                 setattr(self, item, value)
+
+        self.has_stats = True
 
     def load_meta_item(self, item):
         """ Load individual item. """
@@ -520,7 +522,7 @@ class SeismicGeometry:
             'labelright': False,
             **kwargs
         }
-        plot_image(slide, mode='single', **kwargs)
+        plot_image(slide, **kwargs)
 
     def show_amplitude_hist(self, scaler=None, bins=50, **kwargs):
         """ Show distribution of amplitudes in `trace_container`. Optionally applies chosen `scaler`. """
@@ -744,6 +746,8 @@ class SeismicGeometry:
         path_meta = os.path.splitext(path_hdf5)[0] + '.meta'
         self.store_meta(path_meta)
 
+
+
 class SeismicGeometrySEGY(SeismicGeometry):
     """ Class to infer information about SEG-Y cubes and provide convenient methods of working with them.
     A wrapper around `segyio` to provide higher-level API.
@@ -801,23 +805,24 @@ class SeismicGeometrySEGY(SeismicGeometry):
 
         self.add_attributes()
 
-        # Create a matrix with ones at fully-zeroes traces
-        if self.index_headers == self.INDEX_POST:
-            try:
-                size = self.depth // 10
-                slc = np.stack([self[:, :, i * size] for i in range(1, 10)], axis=-1)
-                self.zero_traces = np.zeros(self.lens, dtype=np.int)
-                self.zero_traces[np.std(slc, axis=-1) == 0] = 1
-            except ValueError: # can't reshape
-                pass
-
+        # Collect stats, if needed and not collected previously
         path_meta = os.path.splitext(self.path)[0] + '.meta'
         if os.path.exists(path_meta) and not recollect:
             self.load_meta()
         elif collect_stats:
             self.collect_stats(**kwargs)
 
-        # Store additional segy info, that is preserved in HDF5
+        # Create a matrix with ones at fully-zero traces
+        if self.index_headers == self.INDEX_POST and not hasattr(self, 'zero_traces'):
+            try:
+                size = self.depth // 10
+                slc = np.stack([self[:, :, i * size] for i in range(1, 10)], axis=0)
+                self.zero_traces = np.zeros(self.lens, dtype=np.int32)
+                self.zero_traces[np.std(slc, axis=0) == 0] = 1
+            except ValueError: # can't reshape
+                pass
+
+        # Store additional segy info
         self.segy_path = self.path
         self.segy_text = [self.segyfile.text[i] for i in range(1 + self.segyfile.ext_headers)]
         self.add_rotation_matrix()

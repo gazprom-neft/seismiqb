@@ -166,12 +166,12 @@ class Extractor(BaseController):
         """
         return (
             Pipeline()
-            .crop(points=D('train_sampler')(self.batch_size),
-                  shape=self.crop_shape, adaptive_slices=C('adaptive_slices'),
-                  side_view=C('side_view', default=False))
+            .make_locations(points=D('train_sampler')(self.batch_size),
+                            shape=self.crop_shape, adaptive_slices=C('adaptive_slices'),
+                            side_view=C('side_view', default=False))
             .load_cubes(dst='images')
             .adaptive_reshape(src='images', shape=self.crop_shape)
-            .scale(mode='q', src='images')
+            .normalize(mode='q', src='images')
         )
 
     def augmentation_pipeline(self):

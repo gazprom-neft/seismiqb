@@ -64,14 +64,14 @@ class Enhancer(BaseController):
         """
         return (
             Pipeline()
-            .crop(points=D('train_sampler')(self.batch_size),
-                  shape=self.crop_shape, side_view=True)
+            .make_locations(points=D('train_sampler')(self.batch_size),
+                            shape=self.crop_shape, side_view=True)
             .create_masks(dst='masks', width=C('width', default=3))
             .mask_rebatch(src='masks', threshold=C('rebatch_threshold', default=0.99))
             .load_cubes(dst='images')
             .adaptive_reshape(src=['images', 'masks'],
                               shape=self.crop_shape)
-            .scale(mode='q', src='images')
+            .normalize(mode='q', src='images')
         )
 
     def distortion_pipeline(self):
@@ -133,13 +133,13 @@ class Enhancer(BaseController):
             .init_variable('predicted_masks', default=list())
             .import_model('base', C('model_pipeline'))
             # Load data
-            .crop(points=D('grid_gen')(), shape=self.crop_shape,
-                  side_view=C('side_view', default=False))
+            .make_locations(points=D('grid_gen')(), shape=self.crop_shape,
+                            side_view=C('side_view', default=False))
             .load_cubes(dst='images')
             .create_masks(dst='prior_masks', width=3)
             .adaptive_reshape(src=['images', 'prior_masks'],
                               shape=self.crop_shape)
-            .scale(mode='q', src='images')
+            .normalize(mode='q', src='images')
             # Use model for prediction
             .predict_model('base',
                            B('images'),

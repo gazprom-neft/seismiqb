@@ -2,11 +2,14 @@
 #pylint: disable=too-many-lines
 import os
 from glob import glob
+from warnings import warn
+from collections import defaultdict
 import contextlib
 
 import numpy as np
 import h5py
 from tqdm.auto import tqdm
+from scipy.special import expit
 
 from ..batchflow import FilesIndex, DatasetIndex, Dataset, Sampler, Pipeline
 from ..batchflow import NumpySampler
@@ -16,9 +19,9 @@ from .crop_batch import SeismicCropBatch
 
 from .horizon import Horizon, UnstructuredHorizon
 from .metrics import HorizonMetrics
-from .plotters import plot_image
-from .utils import IndexedDict, round_to_array, gen_crop_coordinates, make_axis_grid, infer_tuple
-
+from .plotters import plot_image, show_3d
+from .utils import round_to_array, gen_crop_coordinates, make_axis_grid, infer_tuple
+from .utility_classes import IndexedDict
 
 
 class SeismicCubeset(Dataset):
@@ -54,6 +57,7 @@ class SeismicCubeset(Dataset):
 
         self.grid_gen, self.grid_info, self.grid_iters = None, None, None
         self.shapes_gen, self.orders_gen = None, None
+        self._cached_attributes = {'geometries'}
 
 
     @classmethod
@@ -78,6 +82,36 @@ class SeismicCubeset(Dataset):
             for horizon in labels:
                 msg += f'        {horizon.name}\n'
         return msg
+
+
+    def __getitem__(self, key):
+        """ Select attribute or its item for specific cube.
+
+        Examples
+        --------
+        Get `labels` attribute for cube with 0 index:
+        >>> cubeset[0, 'labels']
+        Get 2nd `channels` attribute item for cube with name 'CUBE_01_XXX':
+        >>> cubeset['CUBE_01_XXX', 'channels', 2]
+        """
+        idx, attr, *item_num = key
+        item_num = item_num[0] if len(item_num) == 1 else slice(None)
+        return getattr(self, attr)[idx][item_num]
+
+
+    def __setitem__(self, key, value):
+        """ Set attribute or its item for specific cube.
+
+        Examples
+        --------
+        Set `labels` attribute for cube with 0 index to `[label_0, label_1]`:
+        >>> cubeset[0, 'labels'] = [label_0, label_1]
+        Set 2nd item of `channels` attribute for cube with name 'CUBE_01_XXX' to `channel_0`:
+        >>> cubeset['CUBE_01_XXX', 'channels', 2] = channel_0
+        """
+        idx, attr, *item_num = key
+        item_num = item_num[0] if len(item_num) == 1 else slice(None)
+        getattr(self, attr)[idx][item_num] = value
 
 
     def gen_batch(self, batch_size, shuffle=False, n_iters=None, n_epochs=None, drop_last=False,
@@ -149,29 +183,163 @@ class SeismicCubeset(Dataset):
         ----------
         paths : dict
             Mapping from indices to txt paths with labels.
+        filter_zeros : bool
+            Whether to remove labels on zero-traces.
         dst : str
             Name of attribute to put labels in.
-
+        labels_class : class
+            Class to use for labels creation. If None, infer from `geometries`.
+            Defaults to None.
         Returns
         -------
         SeismicCubeset
             Same instance with loaded labels.
         """
         if not hasattr(self, dst):
-            setattr(self, dst, IndexedDict({ix: dict() for ix in self.indices}))
+            setattr(self, dst, IndexedDict({ix: [] for ix in self.indices}))
 
-        for ix in self.indices:
+        for idx in self.indices:
             if labels_class is None:
-                if self.geometries[ix].structured:
+                if self.geometries[idx].structured:
                     labels_class = Horizon
                 else:
                     labels_class = UnstructuredHorizon
-
-            label_list = [labels_class(path, self.geometries[ix], **kwargs) for path in paths[ix]]
+            label_list = [labels_class(path, self.geometries[idx], **kwargs) for path in paths[idx]]
             label_list.sort(key=lambda label: label.h_mean)
             if filter_zeros:
                 _ = [getattr(item, 'filter')() for item in label_list]
-            getattr(self, dst)[ix] = [item for item in label_list if len(item.points) > 0]
+            self[idx, dst] = [item for item in label_list if len(item.points) > 0]
+            self._cached_attributes.add(dst)
+
+
+    def show_labels(self, indices=None, main_labels='labels', overlay_labels=None, attributes=None, correspondence=None,
+                    scale=1, colorbar=True, main_cmap='tab20b', overlay_cmap='autumn', overlay_alpha=0.7,
+                    suptitle_size=20, title_size=15, transpose=True):
+        """ Show specific attributes for labels of selected cubes with optional overlay by other attributes.
+
+        Parameters
+        ----------
+        indices : list of int, list of str or None
+            Cubes indices to show labels for. If None, show labels for all cubes. Defaults to None.
+        main_labels : str
+            Name of cubeset attribute to get labels from for the main image.
+        overlay_labels : str
+            Name of cubeset attribute to get labels from for the overlay image.
+        attributes : str or list of str
+            Names of label attribute to show in a row (incompatible with `correspondence` arg).
+        correspondence : list of dicts
+            Alternative plotting specifications allowing nuanced vizualizations (incompatible with `attributes` arg).
+            Each item of a list must be a dict defining label-attribute correspondence for specific subplot in a row.
+            This dict should consist of `str` keys with the names of cubeset attributes to get labels for plotting from
+            and `dict` values, specifying at least an attribute to plot for selected label. This allows plotting both
+            non-overlayed and overlayed by mask images of specific label attribute, e.g.:
+            >>> [
+            >>>     {
+            >>>         'labels' : dict(attribute='amplitudes', cmap='tab20c')
+            >>>     },
+            >>>     {
+            >>>         'labels' : dict(attribute='amplitudes', cmap='tab20c'),
+            >>>         'channels': dict(attribute='masks', cmap='Blues, alpha=0.5)
+            >>>     }
+            >>> ]
+        scale : int
+            How much to scale the figure.
+        colorbar : bool
+            Whether plot colorbar for every subplot.
+            May be overriden for specific subplot by `colorbar` from `correspondence` arg if specified there.
+        main_cmap : str
+            Default name of colormap for main image.
+            May be overriden for specific subplot by `cmap` from `correspondence` arg if specified there.
+        overlay_cmap : str
+            Default name of colormap for overlay image.
+            May be overriden for specific subplot by `cmap` from `correspondence` arg if specified there.
+        overlay_alpha : float from [0, 1]
+            Default opacity for overlay image.
+            May be overriden for specific subplot by `alpha` from `correspondence` arg if specified there.
+        suptitle_size : int
+            Fontsize of suptitle for a row of images.
+        title_size : int
+            Size of titles for every subplot in a row.
+        transpose : bool
+            Whether plot data in `plot_image` way or not.
+        """
+        #pylint: disable=import-outside-toplevel
+        from matplotlib import pyplot as plt
+        from mpl_toolkits import axes_grid1
+
+        def add_colorbar(im, aspect=20, pad_fraction=0.5, **kwargs):
+            """Add a vertical color bar to an image plot. """
+            divider = axes_grid1.make_axes_locatable(im.axes)
+            width = axes_grid1.axes_size.AxesY(im.axes, aspect=1./aspect)
+            pad = axes_grid1.axes_size.Fraction(pad_fraction, width)
+            cax = divider.append_axes("right", size=width, pad=pad)
+            return im.axes.figure.colorbar(im, cax=cax, **kwargs)
+
+        indices = indices or self.indices
+        if correspondence is None:
+            attributes = 'heights' if attributes is None else attributes
+            attributes = [attributes] if isinstance(attributes, str) else attributes
+            correspondence = [{main_labels: dict(attribute=attribute)} for attribute in attributes]
+        elif attributes is not None:
+            raise ValueError("Can't use both `correspondence` and `attributes`.")
+
+        for idx in indices:
+            for label_num, label in enumerate(self[idx, main_labels]):
+                x, y = label.cube_shape[:-1] if transpose else label.cube_shape[1::-1]
+                ratio = np.divide(x, y)
+                figaspect = np.array([ratio * len(correspondence), 1]) * scale * 10
+                fig, axes = plt.subplots(ncols=len(correspondence), figsize=figaspect)
+                axes = axes if isinstance(axes, np.ndarray) else [axes]
+                suptitle_size = int(ratio * suptitle_size)
+                title_size = int(title_size * ratio)
+                fig.suptitle(f"`{label.name}` on `{idx}`", size=suptitle_size)
+                main_label_bounds = tuple(slice(*lims) for lims in label.bbox[:2])
+                for ax, src_params in zip(axes, correspondence):
+                    if overlay_labels is not None and overlay_labels not in src_params:
+                        src_params[overlay_labels] = dict(attribute='masks')
+                    attributes = []
+                    for layer_num, (src, params) in enumerate(src_params.items()):
+                        attribute = params['attribute']
+                        attributes.append(attribute)
+                        data = self[idx, src, label_num].load_attribute(attribute, fill_value=np.nan)
+
+                        if layer_num == 0:
+                            alpha = 1
+                            cmap = params.get('cmap', main_cmap)
+                        else:
+                            alpha = params.get('alpha', overlay_alpha)
+                            cmap = params.get('cmap', overlay_cmap)
+
+                        if len(data.shape) > 2 and data.shape[2] != 1:
+                            data = data[..., data.shape[2] // 2 + 1]
+                        data = data.squeeze()
+                        data = data[main_label_bounds]
+                        data = data.T if transpose else data
+
+                        im = ax.imshow(data, cmap=cmap, alpha=alpha)
+                        local_colorbar = params.get('colorbar', colorbar)
+                        if local_colorbar and layer_num == 0:
+                            add_colorbar(im)
+                    ax.set_title(', '.join(np.unique(attributes)), size=title_size)
+
+
+    def reset_caches(self, attrs=None):
+        """ Reset lru cache for cached class attributes.
+
+        Parameters
+        ----------
+        attrs : list or tuple of str
+            Class attributes to reset cache in.
+            If None, reset in `geometries` and attrs added by `create_labels`.
+            Defaults to None.
+        """
+        cached_attributes = attrs or self._cached_attributes
+        for idx in self.indices:
+            for attr in cached_attributes:
+                cached_attr = self[idx, attr]
+                cached_attr = cached_attr if isinstance(cached_attr, list) else [cached_attr]
+                _ = [item.reset_cache() for item in cached_attr]
+
 
     def dump_labels(self, path, fmt='npy', separate=False):
         """ Dump points to file. """
@@ -200,7 +368,7 @@ class SeismicCubeset(Dataset):
         self._sampler = sampler
 
 
-    def create_sampler(self, mode='hist', p=None, transforms=None, dst='sampler', **kwargs):
+    def create_sampler(self, mode='hist', p=None, transforms=None, dst='sampler', src_labels='labels', **kwargs):
         """ Create samplers for every cube and store it in `samplers`
         attribute of passed dataset. Also creates one combined sampler
         and stores it in `sampler` attribute of passed dataset.
@@ -240,7 +408,8 @@ class SeismicCubeset(Dataset):
 
             elif mode[ix] == 'hist' or mode[ix] == 'horizon':
                 sampler = 0 & NumpySampler('n', dim=3)
-                for i, label in enumerate(self.labels[ix]):
+                labels = getattr(self, src_labels)[ix]
+                for i, label in enumerate(labels):
                     label.create_sampler(**kwargs)
                     sampler = sampler | label.sampler
             else:
@@ -364,8 +533,8 @@ class SeismicCubeset(Dataset):
             points = sampler(n)
         else:
             points = sampler.sample(n)
-        batch = (self.p.crop(points=points, shape=shape, side_view=side_view,
-                             adaptive_slices=adaptive_slices, grid_src=grid_src)
+        batch = (self.p.make_locations(points=points, shape=shape, side_view=side_view,
+                                       adaptive_slices=adaptive_slices, grid_src=grid_src)
                  .next_batch(self.size))
 
         unsalted = np.array([batch.unsalt(item) for item in batch.indices])
@@ -387,12 +556,116 @@ class SeismicCubeset(Dataset):
         plot_image(background, **kwargs)
         return batch
 
+    def show_3d(self, idx=0, src='labels', aspect_ratio=None, zoom_slice=None,
+                 n_points=100, threshold=100, n_sticks=100, n_nodes=10,
+                 slides=None, margin=(0, 0, 20), colors_mapping=None, **kwargs):
+        """ Interactive 3D plot for some elements of cube. Roughly, does the following:
+            - take some faults and/or horizons
+            - select `n` points to represent the horizon surface and `n_sticks` and `n_nodes` for each fault
+            - triangulate those points
+            - remove some of the triangles on conditions
+            - use Plotly to draw the tri-surface
+            - draw few slides of the cube if needed
+        Parameters
+        ----------
+        idx : int, str
+            Cube index.
+        src : str, Horizon-instance or list
+            Items to draw, by default, 'labels'. If item of list (or `src` itself) is str, then all items of
+            that dataset attribute will be drawn.
+        aspect_ratio : None, tuple of floats or Nones
+            Aspect ratio for each axis. Each None in the resulting tuple will be replaced by item from
+            `(geometry.cube_shape[0] / geometry.cube_shape[1], 1, 1)`.
+        zoom_slice : tuple of slices or None
+            Crop from cube to show. By default, the whole cube volume will be shown.
+        n_points : int
+            Number of points for horizon surface creation.
+            The more, the better the image is and the slower it is displayed.
+        threshold : number
+            Threshold to remove triangles with bigger height differences in vertices.
+        n_sticks : int
+            Number of sticks for each fault.
+        n_nodes : int
+            Number of nodes for each stick.
+        slides : list of tuples
+            Each tuple is pair of location and axis to load slide from seismic cube.
+        margin : tuple of ints
+            Added margin for each axis, by default, (0, 0, 20).
+        colors_mapping : dict
+            Mapping of label class name to color defined as str, by default, all labels will be shown in green.
+        show_axes : bool
+            Whether to show axes and their labels.
+        width, height : number
+            Size of the image.
+        savepath : str
+            Path to save interactive html to.
+        kwargs : dict
+            Other arguments of plot creation.
+        """
+        src = src if isinstance(src, (tuple, list)) else [src]
+        geometry = self.geometries[idx]
+        colors_mapping = colors_mapping or {'all': 'green'}
+        coords = []
+        simplices = []
+        colors = []
+
+        if zoom_slice is None:
+            zoom_slice = [slice(0, geometry.cube_shape[i]) for i in range(3)]
+        else:
+            zoom_slice = [
+                slice(item.start or 0, item.stop or stop) for item, stop in zip(zoom_slice, geometry.cube_shape)
+            ]
+        zoom_slice = tuple(zoom_slice)
+        triangulation_kwargs = {
+            'n_points': n_points,
+            'threshold': threshold,
+            'n_sticks': n_sticks,
+            'n_nodes': n_nodes,
+            'slices': zoom_slice
+        }
+
+        labels = [getattr(self, src_)[idx] if isinstance(src_, str) else [src_] for src_ in src]
+        labels = sum(labels, [])
+        for label in labels:
+            x, y, z, simplices_ = label.make_triangulation(**triangulation_kwargs)
+            if x is not None:
+                simplices += [simplices_ + sum([len(item) for item in coords])]
+                color = colors_mapping.get(type(label).__name__, colors_mapping.get('all', 'green'))
+                colors += [[color] * len(simplices_)]
+                coords += [np.stack([x, y, z], axis=1)]
+
+        simplices = np.concatenate(simplices, axis=0)
+        coords = np.concatenate(coords, axis=0)
+        colors = np.concatenate(colors)
+        title = geometry.name
+
+        default_aspect_ratio = (geometry.cube_shape[0] / geometry.cube_shape[1], 1, 1)
+        aspect_ratio = [None] * 3 if aspect_ratio is None else aspect_ratio
+        aspect_ratio = [item or default for item, default in zip(aspect_ratio, default_aspect_ratio)]
+
+        axis_labels = (geometry.index_headers[0], geometry.index_headers[1], 'DEPTH')
+
+        images = []
+        if slides is not None:
+            for loc, axis in slides:
+                image = geometry.load_slide(loc, axis=axis)
+                if axis == 0:
+                    image = image[zoom_slice[1:]]
+                elif axis == 1:
+                    image = image[zoom_slice[0], zoom_slice[-1]]
+                else:
+                    image = image[zoom_slice[:-1]]
+                images += [(image, loc, axis)]
+
+        show_3d(coords[:, 0], coords[:, 1], coords[:, 2], simplices, title, zoom_slice, colors, margin=margin,
+                aspect_ratio=aspect_ratio, axis_labels=axis_labels, images=images, **kwargs)
+
     def show_points(self, idx=0, src_labels='labels', **kwargs):
         """ Plot 2D map of points. """
         map_ = np.zeros(self.geometries[idx].cube_shape[:-1])
-        for label in getattr(self, src_labels)[idx]:
+        for label in self[idx, src_labels]:
             map_[label.points[:, 0], label.points[:, 1]] += 1
-        labels_class = type(getattr(self, src_labels)[idx][0]).__name__
+        labels_class = type(self[idx, src_labels, 0]).__name__
         map_[map_ == 0] = np.nan
         kwargs = {
             'title': f'{labels_class} on {self.indices[idx]}',
@@ -404,38 +677,39 @@ class SeismicCubeset(Dataset):
         plot_image(map_, **kwargs)
 
 
-    def load(self, label_dir=None, filter_zeros=True, dst_labels='labels', p=None, bins=None, **kwargs):
-        """ Load everything: geometries, point clouds, labels, samplers.
+    def apply_to_attributes(self, function, indices, attributes, **kwargs):
+        """ Call specific function for all attributes of specific cubes.
 
-        Parameters
-        ----------
-        label_dir : str
-            Relative path from each cube to directory with labels.
-        p : sequence of numbers
-            Proportions of different cubes in sampler.
-        filter_zeros : bool
-            Whether to remove labels on zero-traces.
+        function : str or callable
+            If str, name of the function or method to call from the attribute.
+            If callable, applied directly to each item of cubeset attribute from `attributes`.
+        indices : sequence of str
+            For the attributes of which cubes to call `function`.
+        attributes : sequence of str
+            For what cube attributes to call `function`.
+        kwargs :
+            Passed directly to `function`.
+
+        Examples
+        --------
+        >>> cubeset.apply_to_attributes('smooth_out', ['CUBE_01_XXX', 'CUBE_02_YYY'], ['horizons', 'fans'}, iters=3])
         """
-        _ = kwargs
-        label_dir = label_dir or '/INPUTS/HORIZONS/RAW/*'
-
-        paths_txt = {}
-        for i in range(len(self)):
-            dir_path = '/'.join(self.index.get_fullpath(self.indices[i]).split('/')[:-1])
-            label_dir_ = label_dir if isinstance(label_dir, str) else label_dir[self.indices[i]]
-            dir_ = dir_path + label_dir_
-            paths_txt[self.indices[i]] = glob(dir_)
-
-        self.load_geometries(**kwargs)
-        self.create_labels(paths=paths_txt, filter_zeros=filter_zeros, dst=dst_labels, **kwargs)
-        self._p, self._bins = p, bins # stored for later sampler creation
+        for idx in indices:
+            if idx not in self.indices:
+                warn(f"Can't call `{function} for {attributes} of cube {idx}, since it is not in index.")
+            else:
+                for attribute in attributes:
+                    for item in self[idx, attribute]:
+                        res = function(item, **kwargs) if callable(function) else getattr(item, function)(**kwargs)
+                        if res is not None:
+                            warn(f"Call for {item} returned not None, which is not expected.")
 
 
-    def make_grid(self, cube_name, crop_shape, ilines=None, xlines=None, heights=None,
+    def make_grid(self, cube_name, crop_shape, ilines=None, xlines=None, heights=None, mode='3d',
                   strides=None, overlap=None, overlap_factor=None,
                   batch_size=16, filtering_matrix=None, filter_threshold=0):
         """ Create regular grid of points in cube.
-        This method is usually used with `assemble_predict` action of SeismicCropBatch.
+        This method is usually used with :meth:`.assemble_predict`.
 
         Parameters
         ----------
@@ -443,34 +717,53 @@ class SeismicCubeset(Dataset):
             Reference to cube. Should be valid key for `geometries` attribute.
         crop_shape : sequence
             Shape of model inputs.
-        ilines : sequence of two elements
+        ilines : sequence of two int
             Location of desired prediction, iline-wise.
             If None, whole cube ranges will be used.
-        xlines : sequence of two elements
+        xlines : sequence of two int
             Location of desired prediction, xline-wise.
             If None, whole cube ranges will be used.
-        heights : sequence of two elements
-            Location of desired prediction, depth-wise.
+        heights : sequence of two int or a single number
+            If sequence, location of desired prediction, depth-wise.
+            If single number, a height to make grid along when `mode` is '2d'.
+            In this case height will be corrected by half of crop height.
             If None, whole cube ranges will be used.
+        mode : '3d' or '2d'
+            Mode to generate grid coordinates.
+            If '3d', in volume defined by `ilines`, `xlines`, `heights`.
+            If '2d', on area defined by `ilines`, `xlines`.
+            Defaults to '3d'.
         strides : float or sequence
+            Distance between grid points.
+        overlap : float or sequence
             Distance between grid points.
         overlap_factor : float or sequence
             Overlapping ratio of successive crops.
             Can be seen as `how many crops would cross every through point`.
-            If both overlap and overlap_factor are provided, overlap_factor will be used.
+            If both overlap and overlap_factor are provided,
+            only overlap_factor will be used.
         batch_size : int
             Amount of returned points per generator call.
         filtering_matrix : ndarray
-            Binary matrix of (ilines_len, xlines_len) shape with ones corresponding
-            to areas that can be skipped in the grid.
-            E.g., a matrix with zeros at places where a horizon is present and ones everywhere else.
+            Binary matrix of (ilines_len, xlines_len) shape with ones
+            corresponding to areas that can be skipped in the grid.
+            E.g., a matrix with zeros at places where a horizon is present
+            and ones everywhere else.
             If None, geometry.zero_traces matrix will be used.
         filter_threshold : int or float in [0, 1]
-            Exclusive lower bound for non-gap number of points (with 0's in the filtering_matrix)
-            in a crop in the grid. Default value is 0.
-            If float, proportion from the total number of traces in a crop will be computed.
+            Exclusive lower bound for non-gap number of points (with 0's in the
+            filtering_matrix) in a crop in the grid. Default value is 0.
+            If float, proportion from the total number of traces in a crop will
+            be computed.
         """
-        #pylint: disable=too-many-branches
+        if mode == '2d':
+            if isinstance(heights, (int, float)):
+                height = int(heights) - crop_shape[2] // 2 # start for heights slices made by `crop` action
+                heights = (height, height + 1)
+            else:
+                raise ValueError("`heights` should be a single `int` value when `mode` is '2d'")
+        elif mode != '3d':
+            raise ValueError("`mode` can either be '3d' or '2d'.")
         geometry = self.geometries[cube_name]
 
         if isinstance(overlap_factor, (int, float)):
@@ -550,6 +843,91 @@ class SeismicCubeset(Dataset):
         }
 
 
+    def show_grid(self, src_labels='labels', labels_indices=None, attribute='cube_values', plot_dict=None):
+        """ Plot grid over selected surface to visualize how it overlaps data.
+
+        Parameters
+        ----------
+        src_labels : str
+            Labels to show below the grid.
+            Defaults to `labels`.
+        labels_indices : str
+            Indices of items from `src_labels` to show below the grid.
+        attribute : str
+            Alias from :attr:`~Horizon.FUNC_BY_ATTR` to show below the grid.
+        plot_dict : dict, optional
+            Dict of plot parameters, such as:
+                figsize : tuple
+                    Size of resulted figure.
+                title_fontsize : int
+                    Font size of title over the figure.
+                attr_* : any parameter for `plt.imshow`
+                    Passed to attribute plotter
+                grid_* : any parameter for `plt.hlines` and `plt.vlines`
+                    Passed to grid plotter
+                crop_* : any parameter for `plt.hlines` and `plt.vlines`
+                    Passed to corners crops plotter
+        """
+        #pylint: disable=import-outside-toplevel
+        from matplotlib import pyplot as plt
+
+        labels_indices = labels_indices if isinstance(labels_indices, (tuple, list)) else [labels_indices]
+        labels_indices = slice(None) if labels_indices[0] is None else labels_indices
+        labels = self[self.grid_info['cube_name'], src_labels, labels_indices]
+
+        # Calculate grid lines coordinates
+        (x_min, x_max), (y_min, y_max) = self.grid_info['range'][:2]
+        x_stride, y_stride = self.grid_info['strides'][:2]
+        x_crop, y_crop = self.grid_info['crop_shape'][:2]
+        x_lines = list(np.arange(0, x_max, x_stride)) + [x_max - x_crop]
+        y_lines = list(np.arange(0, y_max, y_stride)) + [y_max - y_crop]
+
+        default_plot_dict = {
+            'figsize': (20 * x_max // y_max, 10),
+            'title_fontsize': 18,
+            'attr_cmap' : 'tab20b',
+            'grid_color': 'darkslategray',
+            'grid_linestyle': 'dashed',
+            'crop_color': 'crimson',
+            'crop_linewidth': 3
+        }
+        plot_dict = default_plot_dict if plot_dict is None else {**default_plot_dict, **plot_dict}
+        attr_plot_dict = {k.split('attr_')[-1]: v for k, v in plot_dict.items() if k.startswith('attr_')}
+        attr_plot_dict['zorder'] = 0
+        grid_plot_dict = {k.split('grid_')[-1]: v for k, v in plot_dict.items() if k.startswith('grid_')}
+        grid_plot_dict['zorder'] = 1
+        crop_plot_dict = {k.split('crop_')[-1]: v for k, v in plot_dict.items() if k.startswith('crop_')}
+        crop_plot_dict['zorder'] = 2
+
+        _fig, axes = plt.subplots(ncols=len(labels), figsize=plot_dict['figsize'])
+        axes = axes if isinstance(axes, np.ndarray) else [axes]
+
+        for ax, label in zip(axes, labels):
+            # Plot underlaying attribute
+            underlay = label.load_attribute(attribute, transform={'fill_value': np.nan})
+            if len(underlay.shape) == 3:
+                underlay = underlay[:, :, underlay.shape[2] // 2].squeeze()
+            underlay = underlay.T
+            ax.imshow(underlay, **attr_plot_dict)
+            ax.set_title("Grid over `{}` on `{}`".format(attribute, label.name), fontsize=plot_dict['title_fontsize'])
+
+            # Set limits
+            ax.set_xlim([x_min, x_max])
+            ax.set_ylim([y_max, y_min])
+
+            # Plot grid
+            ax.vlines(x_lines, y_min, y_max, **grid_plot_dict)
+            ax.hlines(y_lines, x_min, x_max, **grid_plot_dict)
+
+            # Plot first crop
+            ax.vlines(x=x_lines[0] + x_crop, ymin=y_min, ymax=y_crop, **crop_plot_dict)
+            ax.hlines(y=y_lines[0] + y_crop, xmin=x_min, xmax=x_crop, **crop_plot_dict)
+
+            # Plot last crop
+            ax.vlines(x=x_lines[-1], ymin=y_max - x_crop, ymax=y_max, **crop_plot_dict)
+            ax.hlines(y=y_lines[-1], xmin=x_max - y_crop, xmax=x_max, **crop_plot_dict)
+
+
     def mask_to_horizons(self, src, cube_name, threshold=0.5, averaging='mean', minsize=0,
                          dst='predicted_horizons', prefix='predict', src_grid_info='grid_info'):
         """ Convert mask to a list of horizons.
@@ -578,9 +956,9 @@ class SeismicCubeset(Dataset):
         horizons = Horizon.from_mask(mask, grid_info,
                                      threshold=threshold, averaging=averaging, minsize=minsize, prefix=prefix)
         if not hasattr(self, dst):
-            setattr(self, dst, IndexedDict({ix: dict() for ix in self.indices}))
+            setattr(self, dst, IndexedDict({ix: [] for ix in self.indices}))
 
-        getattr(self, dst)[cube_name] = horizons
+        self[cube_name, dst] = horizons
 
 
     def merge_horizons(self, src, mean_threshold=2.0, adjacency=3, minsize=50):
@@ -604,7 +982,7 @@ class SeismicCubeset(Dataset):
         """
         for idx in self.indices:
             if horizon.geometry.name == self.geometries[idx].name:
-                horizons_to_compare = getattr(self, src_labels)[idx]
+                horizons_to_compare = self[idx, src_labels]
                 break
         HorizonMetrics([horizon, horizons_to_compare]).evaluate('compare', agg=None,
                                                                 absolute=absolute, offset=offset,
@@ -642,15 +1020,15 @@ class SeismicCubeset(Dataset):
         crop_shape[axis] = 1
 
         pipeline = (Pipeline()
-                    .crop(points=point, shape=crop_shape)
+                    .make_locations(points=point, shape=crop_shape)
                     .load_cubes(dst='images')
-                    .scale(mode='q', src='images'))
+                    .normalize(mode='q', src='images'))
 
         if 'masks' in components:
-            indices = kwargs.pop('indices', -1)
+            use_labels = kwargs.pop('use_labels', 'all')
             width = kwargs.pop('width', 5)
             labels_pipeline = (Pipeline()
-                               .create_masks(dst='masks', width=width, indices=indices))
+                               .create_masks(dst='masks', width=width, use_labels=use_labels))
 
             pipeline = pipeline + labels_pipeline
 
@@ -728,7 +1106,7 @@ class SeismicCubeset(Dataset):
             covered points.
             If False then all points from the horizon border will be used.
         """
-        horizon = getattr(self, labels_src)[cube_name][0] if isinstance(labels_src, str) else labels_src
+        horizon = self[cube_name, labels_src, 0] if isinstance(labels_src, str) else labels_src
 
         zero_traces = horizon.geometry.zero_traces
         hor_matrix = horizon.full_matrix.astype(np.int32)
@@ -923,6 +1301,139 @@ class SeismicCubeset(Dataset):
                     aggregation_map[tuple(slices[:-1])] += 1
                     cube_hdf5[slices[0], slices[1], slices[2]] = +prediction
                 cube_hdf5[:] = cube_hdf5 / np.expand_dims(aggregation_map, axis=-1)
+
+
+    def make_labels_prediction(self, pipeline, crop_shape, overlap_factor,
+                               src_labels='horizons', dst_labels='predictions', bar='n',
+                               pipeline_var='predictions', order=(1, 2, 0), binarize=True):
+        """
+        Make predictions and put them into dataset attribute.
+
+        Parameters
+        ----------
+        pipeline : Pipeline
+            Inference pipeline.
+        crop_shape : sequence
+            Passed directly to :meth:`.make_grid`.
+        overlap_factor : float or sequence
+            Passed directly to :meth:`.make_grid`.
+        src_labels : str
+            Name of dataset component with items to make grid for.
+        dst_labels : str
+            Name of dataset component to put predictions into.
+        pipeline_var : str
+            Name of pipeline variable to get predictions for assemble from.
+        order : tuple of int
+            Passed directly to :meth:`.assemble_crops`.
+        binarize : bool
+            Whether convert probability to class label or not.
+        """
+        # pylint: disable=blacklisted-name
+        setattr(self, dst_labels, IndexedDict({ix: [] for ix in self.indices}))
+        for idx, labels in getattr(self, src_labels).items():
+            for label in labels:
+                self.make_grid(cube_name=idx, crop_shape=crop_shape, overlap_factor=overlap_factor,
+                               heights=int(label.h_mean), mode='2d')
+                pipeline = pipeline << self
+                pipeline.run(batch_size=self.size, n_iters=self.grid_iters, bar=bar)
+                prediction = self.assemble_crops(pipeline.v(pipeline_var), order=(1, 2, 0)).squeeze()
+                prediction = expit(prediction)
+                prediction = prediction.round() if binarize else prediction
+                prediction_name = "{}_predicted".format(label.name)
+                self[idx, dst_labels] += [Horizon(prediction, label.geometry, prediction_name)]
+
+
+    # Task-specific loaders
+
+    def load(self, label_dir=None, filter_zeros=True, dst_labels='labels',
+             labels_class=None, p=None, bins=None, **kwargs):
+        """ Load everything: geometries, point clouds, labels, samplers.
+
+        Parameters
+        ----------
+        label_dir : str
+            Relative path from each cube to directory with labels.
+        filter_zeros : bool
+            Whether to remove labels on zero-traces.
+        dst_labels : str
+            Class attribute to put loaded data into.
+        labels_class : class
+            Class to use for labels creation.
+            See details in :meth:`.create_labels`.
+        p : sequence of numbers
+            Proportions of different cubes in sampler.
+        bins : TODO
+        """
+        _ = kwargs
+        label_dir = label_dir or '/INPUTS/HORIZONS/RAW/*'
+
+        paths_txt = {}
+        for idx in self.indices:
+            dir_path = '/'.join(self.index.get_fullpath(idx).split('/')[:-1])
+            label_dir_ = label_dir if isinstance(label_dir, str) else label_dir[idx]
+            dir_ = glob(dir_path + label_dir_)
+            if len(dir_) == 0:
+                warn("No labels in {}".format(dir_path))
+            paths_txt[idx] = dir_
+        self.load_geometries(**kwargs)
+        self.create_labels(paths=paths_txt, filter_zeros=filter_zeros, dst=dst_labels,
+                           labels_class=labels_class, **kwargs)
+        self._p, self._bins = p, bins # stored for later sampler creation
+
+
+    def load_corresponding_labels(self, info, dst_labels=None, main_labels=None, **kwargs):
+        """ Load corresponding labels into corresponding dataset attributes.
+
+        Parameters
+        ----------
+        correspondence : dict
+            Correspondence between cube name and a list of patterns for its labels.
+        labels_dirs : sequence
+            Paths to folders to look corresponding labels with patterns from `correspondence` values for.
+            Paths must be relative to cube location.
+        dst_labels : sequence
+            Names of dataset components to load corresponding labels into.
+        main_labels : str
+            Which dataset attribute assign to `self.labels`.
+        kwargs :
+            Passed directly to :meth:`.create_labels`.
+
+        Examples
+        --------
+        The following argument values may be used to load for labels for 'CUBE_01_XXX':
+        - from 'INPUTS/FACIES/FANS_HORIZONS/horizon_01_corrected.char' into `horizons` component;
+        - from 'INPUTS/FACIES/FANS/fans_on_horizon_01_corrected_v8.char' into `fans` component,
+        and assign `self.horizons` to `self.labels`.
+
+        >>> correspondence = {'CUBE_01_XXX' : ['horizon_01']}
+        >>> labels_dirs = ['INPUTS/FACIES/FANS_HORIZONS', 'INPUTS/FACIES/FANS']
+        >>> dst_labels = ['horizons', 'fans']
+        >>> main_labels = 'horizons'
+        """
+        self.load_geometries()
+
+        label_dir = info['PATHS']["LABELS"]
+        labels_subdirs = info['PATHS']["SUBDIRS"]
+        dst_labels = dst_labels or [labels_subdir.lower() for labels_subdir in labels_subdirs]
+        for labels_subdir, dst_label in zip(labels_subdirs, dst_labels):
+            paths = defaultdict(list)
+            for cube_name, labels in info['CUBES'].items():
+                full_cube_name = f"amplitudes_{cube_name}"
+                cube_path = self.index.get_fullpath(full_cube_name)
+                cube_dir = cube_path[:cube_path.rfind('/')]
+                for label in labels:
+                    label_mask = '/'.join([cube_dir, label_dir, labels_subdir, f"*{label}"])
+                    label_path = glob(label_mask)
+                    if len(label_path) > 1:
+                        raise ValueError('Multiple files match pattern')
+                    paths[full_cube_name].append(label_path[0])
+            self.create_labels(paths=paths, dst=dst_label, labels_class=Horizon, **kwargs)
+        if main_labels is None:
+            main_labels = dst_labels[0]
+            warn("""Cubeset `labels` point now to `{}`.
+                    To suppress this warning, explicitly pass value for `main_labels`.""".format(main_labels))
+        self.labels = getattr(self, main_labels)
+
 
 class Modificator:
     """ Converts array to `object` dtype and prepends the `cube_name` column.

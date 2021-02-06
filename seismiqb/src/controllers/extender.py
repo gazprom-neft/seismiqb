@@ -23,7 +23,7 @@ class Extender(Enhancer):
     #pylint: disable=unused-argument, logging-fstring-interpolation, no-member, attribute-defined-outside-init
 
     def inference(self, horizon, n_steps=30, batch_size=128, stride=16):
-        """Extend, i.e. fill the holes of the given horizon with the
+        """ Extend, i.e. fill the holes of the given horizon with the
         Horizon Extension algorithm using loaded/trained model.
         For each step of the Extension algorithm crops close to the horizon boundaries
         are generated so they contain a part of the known horizon that
@@ -125,12 +125,12 @@ class Extender(Enhancer):
             .init_variable('predicted_horizons', default=list())
             .import_model('base', C('model_pipeline'))
             # Load data
-            .crop(points=L(D('grid_gen')), shape=L(D('shapes_gen')))
+            .make_locations(points=L(D('grid_gen')), shape=L(D('shapes_gen')))
             .load_cubes(dst='images')
             .create_masks(dst='prior_masks', width=3)
             .adaptive_reshape(src=['images', 'prior_masks'],
                               shape=self.crop_shape)
-            .scale(mode='q', src='images')
+            .normalize(mode='q', src='images')
             # Use model for prediction
             .predict_model('base',
                            B('images'),
