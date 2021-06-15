@@ -61,5 +61,6 @@ MODEL_CONFIG_EXTENSION = {
     **MODEL_CONFIG,
     'initial_block': {},
     'optimizer': {'name': 'Adam', 'lr': 0.005,},
+    'microbatch': 64
 }
 MODEL_CONFIG_ENHANCE = {**MODEL_CONFIG_EXTENSION}

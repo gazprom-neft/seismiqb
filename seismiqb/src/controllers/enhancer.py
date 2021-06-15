@@ -7,7 +7,7 @@ import numpy as np
 from ...batchflow import Pipeline, B, V, C, D, P, R
 
 from .horizon import HorizonController
-from .torch_models import ExtensionModel
+from .torch_models import EncoderDecoder
 
 
 class Enhancer(HorizonController):
@@ -80,14 +80,17 @@ class Enhancer(HorizonController):
         """ Define model initialization and model training pipeline.
         Following parameters are fetched from pipeline config: `model_config`.
         """
+        def concat_inputs(batch):
+            batch.images = np.concatenate((batch.images, batch.prior_masks), axis=1)
+
         return (
             Pipeline()
             .init_variable('loss_history', default=[])
-            .init_model(mode='dynamic', model_class=C('model_class', default=ExtensionModel),
+            .init_model(mode='dynamic', model_class=C('model_class', default=EncoderDecoder),
                         name='model', config=C('model_config'))
+            .call(concat_inputs)
             .train_model('model', fetches='loss', save_to=V('loss_history', mode='a'),
                          images=B('images'),
-                         prior_masks=B('prior_masks'),
                          masks=B('masks'))
         )
 
