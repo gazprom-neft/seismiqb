@@ -2069,8 +2069,8 @@ class Horizon:
             mask = mask[zoom_slice]
             xmin = zoom_slice[0].start or xmin
             xmax = zoom_slice[0].stop or xmax
-            ymin = zoom_slice[1].stop or xmin
-            ymax = zoom_slice[1].start or xmax
+            ymin = zoom_slice[1].stop or ymin
+            ymax = zoom_slice[1].start or ymax
 
         # defaults for plotting if not supplied in kwargs
         header = self.geometry.axis_names[axis]
