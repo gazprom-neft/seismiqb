@@ -404,8 +404,8 @@ class SeismicCubeset(Dataset):
             imgs = [img[zoom_slice] for img in imgs]
             xmin = zoom_slice[0].start or xmin
             xmax = zoom_slice[0].stop or xmax
-            ymin = zoom_slice[1].stop or xmin
-            ymax = zoom_slice[1].start or xmax
+            ymin = zoom_slice[1].stop or ymin
+            ymax = zoom_slice[1].start or ymax
 
         # Plotting defaults
         header = geometry.axis_names[axis]
