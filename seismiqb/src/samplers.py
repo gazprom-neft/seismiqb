@@ -53,7 +53,19 @@ class BaseSampler(Sampler):
             points = filtering_function(points, filtering_matrix)
 
         # Keep only points, that produce crops with horizon larger than threshold; append flag
-        points = check_points(points, matrix, crop_shape[:2], i_mask, x_mask, n_threshold)
+        # TODO: Implement threshold check via filtering points with matrix obtained by
+        # convolution of horizon binary matrix and a kernel with size of crop shape
+        if threshold != 0.0:
+            points = check_points(points, matrix, crop_shape[:2], i_mask, x_mask, n_threshold)
+        else:
+            _points = np.empty((i_mask.sum() + x_mask.sum(), 4), dtype=np.int32)
+            _points[:i_mask.sum(), 0:3] = points[i_mask, :]
+            _points[:i_mask.sum(), 3] = 0
+
+            _points[i_mask.sum():, 0:3] = points[x_mask, :]
+            _points[i_mask.sum():, 3] = 1
+
+            points = _points
 
         # Transform points to (orientation, i_start, x_start, h_start, i_stop, x_stop, h_stop)
         buffer = np.empty((len(points), 7), dtype=np.int32)
