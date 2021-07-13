@@ -67,7 +67,7 @@ Application of a model, trained on a set of cubes, to a completely unseen data.
 
 ## Citing seismiQB
 
-Please cite `seismicqb` in your publications if it helps your research.
+Please cite `seismiqb` in your publications if it helps your research.
 
     Khudorozhkov R., Koryagin A., Tsimfer S., Mylzenova D. SeismiQB library for seismic interpretation with deep learning. 2019.
 
