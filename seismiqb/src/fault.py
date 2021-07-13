@@ -36,22 +36,37 @@ class Fault(Horizon):
     FAULT_STICKS = ['INLINE', 'iline', 'xline', 'cdp_x', 'cdp_y', 'height', 'name', 'number']
     COLUMNS = ['iline', 'xline', 'height', 'name', 'number']
 
-    def from_file(self, path, transform=True, **kwargs):
+    def from_file(self, path, transform=True, direction=None, **kwargs):
         """ Init from path to either CHARISMA, REDUCED_CHARISMA or FAULT_STICKS csv-like file
         from .npy or .hdf5 file with points.
         """
         self.name = os.path.basename(path)
         ext = os.path.splitext(path)[1][1:]
-        if ext == 'npy':
-            points = np.load(path, allow_pickle=False)
+        if ext == 'npz':
+            npzfile = np.load(path, allow_pickle=False)
+            points = npzfile['points']
             transform = False
+            nodes = None if len(npzfile['nodes']) == 0 else npzfile['nodes']
         elif ext == 'hdf5':
             cube = SeismicGeometry(path, **kwargs).file_hdf5['cube']
             points = np.stack(np.where(np.array(cube) == 1)).T #TODO: get points in chunks
             transform = False
+            nodes = None
         else:
-            points = self.csv_to_points(path, **kwargs)
+            points, nodes = self.csv_to_points(path, **kwargs)
         self.from_points(points, transform, **kwargs)
+        if nodes is not None:
+            self.from_points(nodes, transform, dst='nodes', reset=None, **kwargs)
+
+        if direction is None:
+            self.direction = 0 if self.points[:, 0].ptp() > self.points[:, 1].ptp() else 1
+        elif isinstance(direction, int):
+            self.direction = direction
+        elif isinstance(direction[self.geometry.short_name], int):
+            self.direction = direction[self.geometry.short_name]
+        else:
+            self.direction = direction[self.geometry.short_name][self.name]
+
 
     def csv_to_points(self, path, fix=False, **kwargs):
         """ Get point cloud array from file values. """
@@ -62,8 +77,9 @@ class Fault(Horizon):
             if len(sticks) > 0:
                 sticks = self.sort_sticks(sticks)
                 points = self.interpolate_3d(sticks, **kwargs)
-                return points
-        return np.zeros((0, 3))
+                nodes = np.concatenate(sticks.values)
+                return points, nodes
+        return np.zeros((0, 3)), np.zeros((0, 3))
 
     @classmethod
     def read_file(cls, path):
@@ -136,9 +152,8 @@ class Fault(Horizon):
         indices = np.array([i for _, i in sorted(zip(coords, range(len(sticks))))])
         return sticks.iloc[indices]
 
-    def interpolate_3d(self, sticks, **kwargs):
+    def interpolate_3d(self, sticks, width=1, **kwargs):
         """ Interpolate fault sticks as a surface. """
-        width = kwargs.get('width', 1)
         triangles = make_triangulation(sticks)
         points = []
         for triangle in triangles:
@@ -198,6 +213,17 @@ class Fault(Horizon):
     def fault_to_csv(cls, df, dst):
         """ Save separate fault to csv. """
         df.to_csv(os.path.join(dst, df.name), sep=' ', header=False, index=False)
+
+    def dump_points(self, path):
+        """ Dump points. """
+        if os.path.exists(path):
+            npzfile = np.load(path, allow_pickle=False)
+            points = np.concatenate([npzfile['points'], self.points], axis=0)
+            nodes = np.concatenate([nodes, self.nodes], axis=0) if self.nodes is not None else npzfile['nodes']
+        else:
+            points = self.points
+            nodes = self.nodes if self.nodes is not None else np.zeros((0, 3), dtype=np.int32)
+        np.savez(path, points=points, nodes=nodes, allow_pickle=False)
 
     def split_faults(self, **kwargs):
         """ Split file with faults points into separate connected faults.

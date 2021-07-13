@@ -3,7 +3,6 @@ import os
 from copy import copy
 from textwrap import dedent
 
-import h5py
 import numpy as np
 import pandas as pd
 
@@ -318,7 +317,7 @@ class Horizon:
 
 
     # Initialization from different containers
-    def from_points(self, points, transform=False, verify=True, **kwargs):
+    def from_points(self, points, transform=False, verify=True, dst='points', reset='matrix', **kwargs):
         """ Base initialization: from point cloud array of (N, 3) shape.
 
         Parameters
@@ -329,6 +328,10 @@ class Horizon:
             Whether transform from line coordinates (ilines, xlines) to cubic system.
         verify : bool
             Whether to remove points outside of the cube range.
+        dst : str
+            Attribute to save result.
+        reset : str or None
+            Storage to reset.
         """
         _ = kwargs
 
@@ -346,10 +349,11 @@ class Horizon:
 
         if self.dtype == np.int32:
             points = np.rint(points)
-        self.points = points.astype(self.dtype)
+        setattr(self, dst, points.astype(self.dtype))
 
         # Collect stats on separate axes. Note that depth stats are properties
-        self.reset_storage('matrix')
+        if reset:
+            self.reset_storage(reset)
 
 
     def from_file(self, path, transform=True, **kwargs):
@@ -1787,51 +1791,6 @@ class Horizon:
         points = self.matrix_to_points(matrix)
         points = self.cubic_to_lines(points)
         self.dump_charisma(points, path, transform, add_height)
-
-    def dump_points(self, path, fmt='npy'):
-        """ Dump points. """
-        if fmt == 'npy':
-            if os.path.exists(path):
-                points = np.load(path, allow_pickle=False)
-                points = np.concatenate([points, self.points], axis=0)
-            else:
-                points = self.points
-            np.save(path, points, allow_pickle=False)
-        elif fmt == 'hdf5':
-            file_hdf5 = h5py.File(path, "a")
-            if 'cube' not in file_hdf5:
-                cube_hdf5 = file_hdf5.create_dataset('cube', self.geometry.cube_shape)
-                cube_hdf5_x = file_hdf5.create_dataset('cube_x', self.geometry.cube_shape[[1, 2, 0]])
-                cube_hdf5_h = file_hdf5.create_dataset('cube_h', self.geometry.cube_shape[[2, 0, 1]])
-            else:
-                cube_hdf5 = file_hdf5['cube']
-                cube_hdf5_x = file_hdf5['cube_x']
-                cube_hdf5_h = file_hdf5['cube_h']
-
-            shape = (self.i_length, self.x_length, self.h_max - self.h_min + 1)
-            fault_array = np.zeros(shape)
-
-            points = self.points - np.array([self.i_min, self.x_min, self._h_min])
-            fault_array[points[:, 0], points[:, 1], points[:, 2]] = 1
-
-            cube_hdf5[self.i_min:self.i_max+1, self.x_min:self.x_max+1, self.h_min:self.h_max+1] += fault_array
-
-            cube_hdf5_x[
-                self.x_min:self.x_max+1,
-                self.h_min:self.h_max+1,
-                self.i_min:self.i_max+1
-            ] += np.transpose(fault_array, (1, 2, 0))
-
-            cube_hdf5_h[
-                self.h_min:self.h_max+1,
-                self.i_min:self.i_max+1,
-                self.x_min:self.x_max+1
-            ] += np.transpose(fault_array, (2, 0, 1))
-
-            file_hdf5.close()
-        else:
-            raise ValueError('Unknown format:', fmt)
-
 
     # Methods of (visual) representation of a horizon
     def __repr__(self):

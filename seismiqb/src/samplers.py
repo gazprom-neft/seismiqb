@@ -19,6 +19,7 @@ from itertools import product
 import numpy as np
 from numba import njit
 
+from .fault import insert_fault_into_mask
 from .utils import filtering_function
 from .utility_classes import IndexedDict
 from ..batchflow import Sampler, ConstantSampler
@@ -56,7 +57,7 @@ class BaseSampler(Sampler):
         # TODO: Implement threshold check via filtering points with matrix obtained by
         # convolution of horizon binary matrix and a kernel with size of crop shape
         if threshold != 0.0:
-            points = check_points(points, matrix, crop_shape[:2], i_mask, x_mask, n_threshold)
+            points = spatial_check_points(points, matrix, crop_shape[:2], i_mask, x_mask, n_threshold)
         else:
             _points = np.empty((i_mask.sum() + x_mask.sum(), 4), dtype=np.int32)
             _points[:i_mask.sum(), 0:3] = points[i_mask, :]
@@ -252,6 +253,8 @@ class HorizonSampler(BaseSampler):
 
     def sample(self, size):
         """ Get exactly `size` locations. """
+        if size == 0:
+            return np.zeros((0, 9), np.int32)
         if self.threshold == 0.0:
             sampled = self._sample(size)
         else:
@@ -260,12 +263,11 @@ class HorizonSampler(BaseSampler):
 
             while accumulated < size:
                 sampled = self._sample(size*2)
-                condition = check_sampled(sampled, self.matrix, self.n_threshold)
+                condition = spatial_check_sampled(sampled, self.matrix, self.n_threshold)
 
                 sampled_list.append(sampled[condition])
                 accumulated += condition.sum()
             sampled = np.concatenate(sampled_list)[:size]
-            self._counter = len(sampled_list)
 
         buffer = np.empty((size, 9), dtype=np.int32)
         buffer[:, 0] = self.geometry_id
@@ -298,8 +300,165 @@ class HorizonSampler(BaseSampler):
         return orientation_matrix
 
 
+
+class FaultSampler(BaseSampler):
+    """ Generator of crop locations, based on a single fault. Not intended to be used directly, see `SeismicSampler`.
+    Makes locations that:
+        - start from the labeled point on fault
+        - don't go beyond cube limits
+
+    Locations are produced as np.ndarray of (size, 9) shape with following columns:
+        (geometry_id, label_id, orientation, i_start, x_start, h_start, i_stop, x_stop, h_stop).
+    Location is randomized in (-0.4*shape, 0.4*shape) range.
+
+    For sampling, we randomly choose `size` rows from `locations`. If some of the sampled locations does not fit the
+    `threshold` constraint or it is imposible to make crop of defined shape, resample until we get exactly
+    `size` locations.
+
+    Parameters
+    ----------
+    fault : Fault
+        Fault to base sampler on.
+    crop_shape : tuple
+        Shape of crop locations to generate.
+    threshold : float
+        Minimum proportion of labeled points in each sampled location.
+    ranges : sequence, optional
+        Sequence of three tuples of two ints or `None`s.
+        If tuple of two ints, then defines ranges of sampling along this axis.
+        If None, then geometry limits are used (no constraints).
+        Note that we actually use only the first two elements, corresponding to spatial ranges.
+    geometry_id, label_id : int
+        Used as the first two columns of sampled values.
+    extend : bool
+        Create locations in non-labeled slides between labeled slides.
+    transpose : bool
+        Create transposed crop locations or not.
+    """
+    dim = 2 + 1 + 6 # dimensionality of sampled points: geometry_id and label_id, orientation, locations
+
+    def __init__(self, fault, crop_shape, threshold=0, ranges=None, geometry_id=0, label_id=0,
+                 extend=True, transpose=False, **kwargs):
+        geometry = fault.geometry
+
+        self.points = fault.points
+        self.nodes = fault.nodes if hasattr(fault, 'nodes') else None
+        self.direction = fault.direction
+        self.transpose = transpose
+
+        self.locations = self._make_locations(geometry, crop_shape, ranges, threshold, extend)
+
+        self.kwargs = kwargs
+
+        self.geometry_id = geometry_id
+        self.label_id = label_id
+
+        self.geometry = geometry
+        self.name = fault.geometry.short_name
+        self.displayed_name = fault.short_name
+        super().__init__(self)
+
+        self.weight = len(self.locations)
+
+    @property
+    def interpolated_nodes(self):
+        """ Create locations in non-labeled slides between labeled slides. """
+        slides = np.unique(self.nodes[:, self.direction])
+        locations = []
+        for i, slide in enumerate(slides):
+            left = slides[max(i-1, 0)]
+            right = slides[min(i+1, len(slides)-1)]
+            chunk = self.nodes[self.nodes[:, self.direction] == slide]
+            for j in range(left, right):
+                chunk[:, self.direction] = j
+                locations += [chunk.copy()]
+        return np.concatenate(locations, axis=0)
+
+    def _make_locations(self, geometry, crop_shape, ranges, threshold, extend):
+         # Parse parameters
+        ranges = ranges or [None, None, None]
+        ranges = [item if item is not None else [0, c]
+                  for item, c in zip(ranges, geometry.cube_shape)]
+        ranges = np.array(ranges)
+
+        crop_shape = np.array(crop_shape)
+        crop_shape_t = crop_shape[[1, 0, 2]]
+        n_threshold = np.int32(np.prod(crop_shape) * threshold)
+
+        if self.nodes is not None:
+            nodes = self.interpolated_nodes if extend else self.nodes
+        else:
+            nodes = self.points
+
+        # Transform points to (orientation, i_start, x_start, h_start, i_stop, x_stop, h_stop)
+        directions = [0, 1] if self.transpose else [self.direction]
+
+        buffer = np.empty((len(nodes) * len(directions), 7), dtype=np.int32)
+
+        for i, direction, in enumerate(directions):
+            start, end = i * len(nodes), (i+1) * len(nodes)
+            shape = crop_shape if direction == 0 else crop_shape_t
+            buffer[start:end, 1:4] = nodes - shape // 2
+            buffer[start:end, 4:7] = buffer[start:end, 1:4] + shape
+            buffer[start:end, 0] = direction
+
+        self.n = len(buffer)
+        self.crop_shape = crop_shape
+        self.crop_shape_t = crop_shape_t
+        self.crop_height = crop_shape[2]
+        self.ranges = ranges
+        self.threshold = threshold
+        self.n_threshold = n_threshold
+        return buffer
+
+    def sample(self, size):
+        """ Get exactly `size` locations. """
+        if size == 0:
+            return np.zeros((0, 9), np.int32)
+        accumulated = 0
+        sampled_list = []
+
+        while accumulated < size:
+            sampled = self._sample(size*4)
+            condition = volumetric_check_sampled(sampled, self.points, self.crop_shape,
+                                                 self.crop_shape_t, self.n_threshold)
+
+            sampled_list.append(sampled[condition])
+            accumulated += condition.sum()
+        sampled = np.concatenate(sampled_list)[:size]
+
+        buffer = np.empty((size, 9), dtype=np.int32)
+        buffer[:, 0] = self.geometry_id
+        buffer[:, 1] = self.label_id
+        buffer[:, 2:] = sampled
+        return buffer
+
+    def _sample(self, size):
+        idx = np.random.randint(self.n, size=size)
+        sampled = self.locations[idx]
+        i_mask = sampled[:, 0] == 0
+        x_mask = sampled[:, 0] == 1
+
+        for mask, shape in zip([i_mask, x_mask], [self.crop_shape, self.crop_shape_t]):
+            high = np.floor(shape * 0.4)
+            low = -high
+            low[shape == 1] = 0
+            high[shape == 1] = 1
+
+            shift = np.random.randint(low=low, high=high, size=(mask.sum(), 3), dtype=np.int32)
+            sampled[mask, 1:4] += shift
+            sampled[mask, 4:] += shift
+
+            sampled[mask, 1:4] = np.clip(sampled[mask, 1:4], 0, self.geometry.cube_shape - shape)
+            sampled[mask, 4:7] = np.clip(sampled[mask, 4:7], shape, self.geometry.cube_shape)
+        return sampled
+
+    def __repr__(self):
+        return f'<FaultSampler for {self.displayed_name}: '\
+               f'crop_shape={tuple(self.crop_shape)}, threshold={self.threshold}>'
+
 @njit
-def check_points(points, matrix, crop_shape, i_mask, x_mask, threshold):
+def spatial_check_points(points, matrix, crop_shape, i_mask, x_mask, threshold):
     """ Compute points, which would generate crops with more than `threshold` labeled pixels.
     For each point, we test two possible shapes (i-oriented and x-oriented) and check `matrix` to compute the
     number of present points. Therefore, each of the initial points can result in up to two points in the output.
@@ -347,8 +506,10 @@ def check_points(points, matrix, crop_shape, i_mask, x_mask, threshold):
                 counter += 1
     return buffer[:counter]
 
+
+
 @njit
-def check_sampled(locations, matrix, threshold):
+def spatial_check_sampled(locations, matrix, threshold):
     """ Remove points, which correspond to crops with less than `threshold` labeled pixels.
     Used as a final filter for already sampled locations: they can generate crops with
     smaller than `threshold` mask only due to the depth randomization.
@@ -361,6 +522,11 @@ def check_sampled(locations, matrix, threshold):
         Depth map in cube coordinates.
     threshold : int
         Minimum amount of labeled pixels in a crop.
+
+    Returns
+    -------
+    condition : np.ndarray
+        Boolean mask for locations.
     """
     condition = np.ones(len(locations), dtype=np.bool_)
 
@@ -372,7 +538,43 @@ def check_sampled(locations, matrix, threshold):
             condition[i] = False
     return condition
 
+@njit
+def volumetric_check_sampled(locations, points, crop_shape, crop_shape_t, threshold):
+    """ Remove points, which correspond to crops with less than `threshold` labeled pixels.
+    Used as a final filter for already sampled locations: they can generate crops with
+    smaller than `threshold`.
 
+    Parameters
+    ----------
+    locations : np.ndarray
+        Locations in (orientation, i_start, x_start, h_start, i_stop, x_stop, h_stop) format.
+    points : points
+        Fault points.
+    crop_shape : np.ndarray
+        Crop shape
+    crop_shape_t : np.ndarray
+        Tranposed crop shape
+    threshold : int
+        Minimum amount of labeled pixels in a crop.
+
+    Returns
+    -------
+    condition : np.ndarray
+        Boolean mask for locations.
+    """
+    condition = np.ones(len(locations), dtype=np.bool_)
+
+    if threshold > 0:
+        for i, (orientation, i_start, x_start, h_start, i_stop,  x_stop, h_stop) in enumerate(locations):
+            shape = crop_shape if orientation == 0 else crop_shape_t
+            mask_bbox = np.array([[i_start, i_stop], [x_start, x_stop], [h_start, h_stop]], dtype=np.int32)
+            mask = np.zeros((shape[0], shape[1], shape[2]), dtype=np.int32)
+
+            insert_fault_into_mask(mask, points, mask_bbox)
+            if mask.sum() < threshold:
+                condition[i] = False
+
+    return condition
 
 class SeismicSampler(Sampler):
     """ Mixture of samplers for multiple cubes with multiple labels.
@@ -404,6 +606,7 @@ class SeismicSampler(Sampler):
     CLASS_TO_MODE = {
         GeometrySampler: ['geometry', 'cube'],
         HorizonSampler: ['horizon', 'surface'],
+        FaultSampler: ['fault']
     }
     MODE_TO_CLASS = {mode : class_
                      for class_, mode_list in CLASS_TO_MODE.items()
@@ -519,7 +722,7 @@ class SeismicSampler(Sampler):
                 matrix[matrix > 0] = 1
                 kwargs['bad_values'] = ()
 
-            kwargs = {
+            _kwargs = {
                 'matrix_name': 'Sampled slices',
                 'cmap': ['Reds', 'black'],
                 'alpha': [1.0, 0.4],
@@ -528,7 +731,7 @@ class SeismicSampler(Sampler):
                 'interpolation': 'bilinear',
                 **kwargs
             }
-            geometry.show((matrix, geometry.zero_traces), **kwargs)
+            geometry.show((matrix, geometry.zero_traces), **_kwargs)
 
 
 
