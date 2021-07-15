@@ -266,12 +266,14 @@ class Accumulator3D:
     kwargs : dict
         Other parameters are passed to HDF5 dataset creation.
     """
-    def __init__(self, shape=None, origin=None, dtype=np.float32, transform=None, path=None, name='data', **kwargs):
+    def __init__(self, shape, origin=None, dtype=np.float32, transform=None, path=None, name='data', **kwargs):
         # Main attribute to store results
         self.name = name
 
         # Dimensionality and location
         self.shape = shape
+        if origin is None:
+            origin = np.zeros_like(shape)
         self.origin = origin
 
         # Properties of storages
@@ -302,12 +304,12 @@ class Accumulator3D:
 
         setattr(self, name, placeholder)
 
-    @property
-    def data(self):
-        """ Data storage. """
-        if self.type in ['hdf5', 'blosc']:
-            return self.file[self.name]
-        return getattr(self, self.name)
+    # @property
+    # def data(self):
+    #     """ Data storage. """
+    #     if self.type in ['hdf5', 'blosc']:
+    #         return self.file[self.name]
+    #     return getattr(self, self.name)
 
     def remove_placeholder(self, name=None):
         """ Remove created placeholder. """
@@ -432,14 +434,14 @@ class MeanAccumulator3D(Accumulator3D):
             for i in range(self.data.shape[0]):
                 counts = self.counts[i]
                 counts[counts == 0] = 1
-                if 'float' in self.dtype.__name__:
+                if np.issubdtype(self.dtype, np.floating):
                     self.data[i] /= counts
                 else:
                     self.data[i] //= counts
 
         elif self.type == 'numpy':
             self.counts[self.counts == 0] = 1
-            if 'float' in self.dtype.__name__:
+            if np.issubdtype(self.dtype, np.floating):
                 self.data /= self.counts
             else:
                 self.data //= self.counts

@@ -740,9 +740,9 @@ class BaseGrid:
     def __init__(self, crop_shape, batch_size=64, locations=None, geometry=None):
         self._iterator = None
         self.batch_size = batch_size
+        self.crop_shape = np.array(crop_shape)
 
         if locations is None:
-            self.crop_shape = np.array(crop_shape)
             self._make_locations()
         else:
             self.locations = locations
@@ -796,17 +796,19 @@ class BaseGrid:
             raise TypeError('Other should be an instance of `BaseGrid`')
         if self.name != other.name:
             raise ValueError('Grids should be for the same geometry!')
+        if (self.crop_shape != other.crop_shape).any():
+            raise ValueError('Grids should have same crop shapes!')
 
         locations = np.concatenate([self.locations, other.locations], axis=0)
         locations = np.unique(locations, axis=0)
         batch_size = min(self.batch_size, other.batch_size)
-        return BaseGrid(locations=locations, batch_size=batch_size, geometry=self.geometry)
+        return BaseGrid(crop_shape=self.crop_shape, locations=locations, batch_size=batch_size, geometry=self.geometry)
 
     def __add__(self, other):
-        self.join(other)
+        return self.join(other)
 
     def __and__(self, other):
-        self.join(other)
+        return self.join(other)
 
     def to_names(self, id_array):
         """ Convert the first two columns of sampled locations into geometry and label string names. """
@@ -922,8 +924,8 @@ class RegularGrid(BaseGrid):
         ranges = [item if item is not None else [0, c] for item, c in zip(ranges, geometry.cube_shape)]
         ranges = np.array(ranges)
 
-        if (ranges[:, 0] < 0).any() or (ranges[:, 1] > geometry.cube_shape).any():
-            raise ValueError('Grid ranges must contain in the geometry!')
+        # if (ranges[:, 0] < 0).any() or (ranges[:, 1] > geometry.cube_shape).any():
+        #     raise ValueError('Grid ranges must contain in the geometry!')
         self.ranges = ranges
         self.shape = ranges[:, 1] - ranges[:, 0]
 
