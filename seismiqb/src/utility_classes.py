@@ -261,18 +261,14 @@ class Accumulator3D:
         If provided, then we use HDF5 datasets instead of regular Numpy arrays, storing the data directly on disk.
         After the initialization, we keep the file handle in `w-` mode during the update phase.
         After aggregation, we re-open the file to automatically repack it in `r` mode.
-    name : str
-        Name of the attribute (and dataset in hdf5) to store data.
     kwargs : dict
         Other parameters are passed to HDF5 dataset creation.
     """
-    def __init__(self, shape=None, origin=None, dtype=np.float32, transform=None, path=None, name='data', **kwargs):
-        # Main attribute to store results
-        self.name = name
-
+    def __init__(self, shape=None, origin=None, dtype=np.float32, transform=None, path=None, **kwargs):
         # Dimensionality and location
         self.shape = shape
         self.origin = origin
+        self.location = [slice(start, start + shape) for start, shape in zip(self.origin, self.shape)]
 
         # Properties of storages
         self.dtype = dtype
@@ -285,29 +281,20 @@ class Accumulator3D:
             self.path = path
 
             self.file = h5py.File(path, mode='w-')
-            self.options = {**kwargs}
         self.type = 'hdf5' if path is not None else 'numpy'
 
         self.aggregated = False
+        self.kwargs = kwargs
 
     # Placeholder management
     def create_placeholder(self, name=None, dtype=None, fill_value=None):
         """ Create named storage as a dataset of HDF5 or plain array. """
         if self.type == 'hdf5':
-            options = {'fillvalue': fill_value, **self.options}
-            options.pop('fill_value')
-            placeholder = self.file.create_dataset(name, shape=self.shape, dtype=dtype, **options)
+            placeholder = self.file.create_dataset(name, shape=self.shape, dtype=dtype, fillvalue=fill_value)
         elif self.type == 'numpy':
             placeholder = np.full(shape=self.shape, fill_value=fill_value, dtype=dtype)
 
         setattr(self, name, placeholder)
-
-    @property
-    def data(self):
-        """ Data storage. """
-        if self.type in ['hdf5', 'blosc']:
-            return self.file[self.name]
-        return getattr(self, self.name)
 
     def remove_placeholder(self, name=None):
         """ Remove created placeholder. """
@@ -352,9 +339,13 @@ class Accumulator3D:
         self._aggregate()
 
         # Re-open the HDF5 file to force flush changes and release disk space from deleted datasets
+        # Also add alias to `data` dataset, so the resulting cube can be opened by `SeismicGeometry`
         if self.type == 'hdf5':
+            self.file['cube_i'] = self.file['data']
             self.file.close()
             self.file = h5py.File(self.path, 'r')
+
+            self.data = self.file['data']
 
         self.aggregated = True
         return self.data
@@ -369,7 +360,6 @@ class Accumulator3D:
 
     def clear(self):
         """ Remove placeholders from memory and disk. """
-        # TODO: check for leaks
         if self.type in ['hdf5', 'blosc']:
             os.remove(self.path)
 
@@ -395,16 +385,22 @@ class Accumulator3D:
         return aggregation_to_class[aggregation](shape=shape, origin=origin, dtype=dtype, fill_value=fill_value,
                                                  transform=transform, path=path, **kwargs)
 
+    @classmethod
+    def from_grid(cls, grid, aggregation='max', dtype=np.float32, fill_value=None, transform=None, path=None, **kwargs):
+        """ Infer necessary parameters for accumulator creation from a passed grid. """
+        return cls.from_aggregation(aggregation=aggregation, dtype=dtype, fill_value=fill_value,
+                                    shape=grid.shape, origin=grid.origin, orientation=grid.orientation,
+                                    transform=transform, path=path, **kwargs)
+
 
 class MaxAccumulator3D(Accumulator3D):
     """ Accumulator that takes maximum value of overlapping crops. """
-    def __init__(self, shape=None, origin=None, dtype=np.float32, fill_value=None, transform=None,
-                 path=None, name='data', **kwargs):
-        super().__init__(shape=shape, origin=origin, dtype=dtype, transform=transform, path=path, name=name, **kwargs)
+    def __init__(self, shape=None, origin=None, dtype=np.float32, fill_value=None, transform=None, path=None, **kwargs):
+        super().__init__(shape=shape, origin=origin, dtype=dtype, transform=transform, path=path, **kwargs)
 
         min_value = np.finfo(dtype).min if 'float' in dtype.__name__ else np.iinfo(dtype).min
         self.fill_value = fill_value if fill_value is not None else min_value
-        self.create_placeholder(name=name, dtype=self.dtype, fill_value=self.fill_value)
+        self.create_placeholder(name='data', dtype=self.dtype, fill_value=self.fill_value)
 
     def _update(self, crop, location):
         self.data[location] = np.maximum(crop, self.data[location])
@@ -415,10 +411,10 @@ class MaxAccumulator3D(Accumulator3D):
 
 class MeanAccumulator3D(Accumulator3D):
     """ Accumulator that takes mean value of overlapping crops. """
-    def __init__(self, shape=None, origin=None, dtype=np.float32, transform=None, path=None, name='data', **kwargs):
-        super().__init__(shape=shape, origin=origin, dtype=dtype, transform=transform, path=path, name=name, **kwargs)
+    def __init__(self, shape=None, origin=None, dtype=np.float32, transform=None, path=None, **kwargs):
+        super().__init__(shape=shape, origin=origin, dtype=dtype, transform=transform, path=path, **kwargs)
 
-        self.create_placeholder(name=name, dtype=self.dtype, fill_value=0)
+        self.create_placeholder(name='data', dtype=self.dtype, fill_value=0)
         self.create_placeholder(name='counts', dtype=np.int8, fill_value=0)
 
     def _update(self, crop, location):
@@ -440,9 +436,9 @@ class MeanAccumulator3D(Accumulator3D):
         elif self.type == 'numpy':
             self.counts[self.counts == 0] = 1
             if 'float' in self.dtype.__name__:
-                self.data /= self.counts
+                self.data[:] /= self.counts
             else:
-                self.data //= self.counts
+                self.data[:] //= self.counts
 
         # Cleanup
         self.remove_placeholder('counts')
@@ -450,10 +446,10 @@ class MeanAccumulator3D(Accumulator3D):
 
 class GMeanAccumulator3D(Accumulator3D):
     """ Accumulator that takes geometric mean value of overlapping crops. """
-    def __init__(self, shape=None, origin=None, dtype=np.float32, transform=None, path=None, name='data', **kwargs):
-        super().__init__(shape=shape, origin=origin, dtype=dtype, transform=transform, path=path, name=name, **kwargs)
+    def __init__(self, shape=None, origin=None, dtype=np.float32, transform=None, path=None, **kwargs):
+        super().__init__(shape=shape, origin=origin, dtype=dtype, transform=transform, path=path, **kwargs)
 
-        self.create_placeholder(name=name, dtype=self.dtype, fill_value=1)
+        self.create_placeholder(name='data', dtype=self.dtype, fill_value=1)
         self.create_placeholder(name='counts', dtype=np.int8, fill_value=0)
 
     def _update(self, crop, location):
@@ -481,6 +477,65 @@ class GMeanAccumulator3D(Accumulator3D):
 
         # Cleanup
         self.remove_placeholder('counts')
+
+
+class AccumulatorBlosc(Accumulator3D):
+    """ Accumulate predictions into `BLOSC` file.
+    Each of the saved slides supposed to be finalized, e.g. coming from another accumulator.
+    During the aggregation, we repack the file to remove duplicates.
+
+    Parameters
+    ----------
+    path : str
+        Path to save `BLOSC` file to.
+    orientation : int
+        If 0, then predictions are stored as `cube_i` dataset inside the file.
+        If 1, then predictions are stored as `cube_x` dataset inside the file and transposed before storing.
+    aggregation : str
+        Type of aggregation for duplicate slides.
+        If `max`, then we take element-wise maximum.
+        If `mean`, then take mean value.
+        If None, then we take random slide.
+    """
+    def __init__(self, path, orientation=0, aggregation='max',
+                 shape=None, origin=None, dtype=np.float32, transform=None, **kwargs):
+        super().__init__(shape=shape, origin=origin, dtype=dtype, transform=transform, path=None)
+        self.type = 'blosc'
+        self.path = path
+        self.orientation = orientation
+        self.aggregation = aggregation
+
+        # Manage the `BLOSC` file
+        from .geometry import BloscFile #pylint: disable=import-outside-toplevel
+        self.file = BloscFile(path, mode='w')
+        if orientation == 0:
+            name = 'cube_i'
+        elif orientation == 1:
+            name = 'cube_x'
+            shape = np.array(shape)[[1, 0, 2]]
+        self.file.create_dataset(name, shape=shape, dtype=dtype)
+
+
+    def _update(self, crop, location):
+        crop = crop.astype(self.dtype)
+        iterator = range(location[self.orientation].start, location[self.orientation].stop)
+
+        # `i` is `loc_idx` shifted by `origin`
+        for i, loc_idx in enumerate(iterator):
+            slc = [slice(None), slice(None), slice(None)]
+            slc[self.orientation] = i
+            slide = crop[tuple(slc)]
+            self.data[loc_idx, :, :] = slide.T if self.orientation == 1 else slide
+
+    def _aggregate(self):
+        self.file = self.file.repack(aggregation=self.aggregation)
+
+
+    @classmethod
+    def from_grid(cls, grid, aggregation='max', dtype=np.float32, transform=None, path=None, **kwargs):
+        """ Infer necessary parameters for accumulator creation from a passed grid. """
+        return cls(path=path, aggregation=aggregation, dtype=dtype, transform=transform,
+                   shape=grid.shape, origin=grid.origin, orientation=grid.orientation, **kwargs)
 
 
 

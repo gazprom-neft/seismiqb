@@ -662,7 +662,7 @@ class MatplotlibPlotter:
             rolling_mean = kwargs.get('rolling_mean')
             if rolling_mean:
                 averaged = array.copy()
-                window = 10 if rolling_mean is True else rolling_mean
+                window = min(10 if rolling_mean is True else rolling_mean, len(array))
                 averaged[(window // 2):(-window // 2 + 1)] = np.convolve(array, np.ones(window) / window, mode='valid')
                 ax.plot(averaged, color=mean_color, linestyle='--')
 

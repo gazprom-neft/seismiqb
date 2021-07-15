@@ -5,24 +5,15 @@ from math import atan
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from numba import njit, prange
 
+from .layers import SemblanceLayer, MovingNormalizationLayer, InstantaneousPhaseLayer, FrequenciesFilterLayer
 
 
 def file_print(msg, path, mode='w'):
     """ Print to file. """
     with open(path, mode) as file:
         print(msg, file=file)
-
-
-def make_axis_grid(axis_range, stride, length, crop_shape):
-    """ #TODO: no longer needed, remove. """
-    grid = np.arange(*axis_range, stride)
-    grid_ = [x for x in grid if x + crop_shape < length]
-    if len(grid) != len(grid_):
-        grid_ += [axis_range[1] - crop_shape]
-    return sorted(grid_)
 
 def fill_defaults(value, default):
     """ #TODO: no longer needed, remove. """
@@ -31,7 +22,7 @@ def fill_defaults(value, default):
     elif isinstance(value, int):
         value = tuple([value] * 3)
     elif isinstance(value, tuple):
-        value = tuple([item if item else default[i] for i, item in enumerate(value)])
+        value = tuple(item if item else default[i] for i, item in enumerate(value))
     return value
 
 
@@ -263,6 +254,24 @@ def filter_simplices(simplices, points, matrix, threshold=5.):
 
     return simplices[mask == 1]
 
+def compute_attribute(array, window=None, device='cuda:0', attribute='semblance', fill_value=None, **kwargs):
+    """ Compute semblance for the cube. """
+    if isinstance(window, int):
+        window = np.ones(3, dtype=np.int32) * window
+    window = np.minimum(np.array(window), array.shape[-3:])
+    inputs = torch.Tensor(array).to(device)
+
+    if attribute == 'semblance':
+        layer = SemblanceLayer(inputs, window=window, fill_value=fill_value or 1)
+    elif attribute == 'moving_normalization':
+        layer = MovingNormalizationLayer(inputs, window=window, fill_value=fill_value or 1, **kwargs)
+    elif attribute == 'phase':
+        layer = InstantaneousPhaseLayer(inputs, **kwargs)
+    elif attribute == 'frequencies_filter':
+        layer = FrequenciesFilterLayer(inputs, window=window, **kwargs)
+    result = layer(inputs)
+    return result.cpu().numpy()
+
 def make_bezier_figure(n=7, radius=0.2, sharpness=0.05, scale=1.0, shape=(1, 1),
                        resolution=None, distance=.5, seed=None):
     """ Bezier closed curve coordinates.
@@ -345,33 +354,6 @@ def make_bezier_figure(n=7, radius=0.2, sharpness=0.05, scale=1.0, shape=(1, 1),
     curve_segments = np.array(curve_segments)
     figure_coordinates = np.unique(np.ceil(curve_segments).astype(int), axis=0)
     return figure_coordinates
-
-
-def compute_attribute(array, window, device='cuda:0', attribute='semblance'):
-    """ Compute semblance for the cube. """
-    if isinstance(window, int):
-        window = np.ones(3, dtype=np.int32) * window
-    window = np.minimum(np.array(window), array.shape)
-
-    inputs = torch.Tensor(array).to(device)
-    inputs = inputs.view(1, 1, *inputs.shape)
-    padding = [(w // 2, w - w // 2 - 1) for w in window]
-
-    num = F.pad(inputs, (0, 0, *padding[1], *padding[0], 0, 0, 0, 0))
-    num = F.conv3d(num, torch.ones((1, 1, window[0], window[1], 1), dtype=torch.float32).to(device)) ** 2
-    num = F.pad(num, (*padding[2], 0, 0, 0, 0, 0, 0, 0, 0))
-    num = F.conv3d(num, torch.ones((1, 1, 1, 1, window[2]), dtype=torch.float32).to(device))
-
-    denum = F.pad(inputs, (*padding[2], *padding[1], *padding[0], 0, 0, 0, 0))
-    denum = F.conv3d(denum ** 2, torch.ones((1, 1, *window), dtype=torch.float32).to(device))
-
-    normilizing = torch.ones(inputs.shape[:-1], dtype=torch.float32).to(device)
-    normilizing = F.pad(normilizing, (*padding[1], *padding[0], 0, 0, 0, 0))
-    normilizing = F.conv2d(normilizing, torch.ones((1, 1, window[0], window[1]), dtype=torch.float32).to(device))
-
-    denum *= normilizing.view(*normilizing.shape, 1)
-    return np.nan_to_num((num / denum).cpu().numpy()[0, 0], nan=1.)
-
 
 def retrieve_function_arguments(function, dictionary):
     """ Retrieve both positional and keyword arguments for a passed `function` from a `dictionary`.

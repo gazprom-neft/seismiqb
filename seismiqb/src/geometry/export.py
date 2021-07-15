@@ -7,87 +7,8 @@ import numpy as np
 import h5pickle as h5py
 import segyio
 
-from ..utils import make_axis_grid
-
-
 class ExportMixin:
     """ Container for methods to save data as seismic cubes in different formats. """
-    @classmethod
-    def create_file_from_iterable(cls, src, shape, window, stride, dst=None,
-                                  agg=None, projection='ixh', threshold=None):
-        """ Aggregate multiple chunks into file with 3D cube.
-
-        Parameters
-        ----------
-        src : iterable
-            Each item is a tuple (position, array) where position is a 3D coordinate of the left upper array corner.
-        shape : tuple
-            Shape of the resulting array.
-        window : tuple
-            Chunk shape.
-        stride : tuple
-            Stride for chunks. Values in overlapped regions will be aggregated.
-        dst : str or None, optional
-            Path to the resulting .hdf5. If None, function will return array with predictions.
-        agg : 'mean', 'min' or 'max' or None, optional
-            The way to aggregate values in overlapped regions. None means that new chunk will rewrite
-            previous value in cube.
-        projection : str, optional
-            Projections to create in hdf5 file, by default 'ixh'.
-        threshold : float or None, optional
-            If not None, threshold to transform values into [0, 1]. Default is None.
-        """
-        shape = np.array(shape)
-        window = np.array(window)
-        stride = np.array(stride)
-
-        if dst is None:
-            dst = np.zeros(shape)
-        else:
-            file_hdf5 = h5py.File(dst, 'a')
-            dst = file_hdf5.create_dataset('cube', shape)
-            cube_hdf5_x = file_hdf5.create_dataset('cube_x', shape[[1, 2, 0]])
-            cube_hdf5_h = file_hdf5.create_dataset('cube_h', shape[[2, 0, 1]])
-
-        lower_bounds = [make_axis_grid((0, shape[i]), stride[i], shape[i], window[i]) for i in range(3)]
-        lower_bounds = np.stack(np.meshgrid(*lower_bounds), axis=-1).reshape(-1, 3)
-        upper_bounds = lower_bounds + window
-        grid = np.stack([lower_bounds, upper_bounds], axis=-1)
-
-        for position, chunk in src:
-            slices = tuple([slice(position[i], position[i]+chunk.shape[i]) for i in range(3)])
-            _chunk = dst[slices]
-            if agg in ('max', 'min'):
-                chunk = np.maximum(chunk, _chunk) if agg == 'max' else np.minimum(chunk, _chunk)
-            elif agg == 'mean':
-                grid_mask = np.logical_and(
-                    grid[..., 1] >= np.expand_dims(position, axis=0),
-                    grid[..., 0] < np.expand_dims(position + window, axis=0)
-                ).all(axis=1)
-                agg_map = np.zeros_like(chunk)
-                for chunk_slc in grid[grid_mask]:
-                    _slices = [slice(
-                        max(chunk_slc[i, 0], position[i]) - position[i],
-                        min(chunk_slc[i, 1], position[i] + window[i]) - position[i]
-                    ) for i in range(3)]
-                    agg_map[tuple(_slices)] += 1
-                chunk /= agg_map
-                chunk = _chunk + chunk
-            dst[slices] = chunk
-        if isinstance(dst, np.ndarray):
-            if threshold is not None:
-                dst = (dst > threshold).astype(int)
-        else:
-            for i in range(0, dst.shape[0], window[0]):
-                slide = dst[i:i+window[0]]
-                if threshold is not None:
-                    slide = (slide > threshold).astype(int)
-                    dst[i:i+window[0]] = slide
-                cube_hdf5_x[:, :, i:i+window[0]] = slide.transpose((1, 2, 0))
-                cube_hdf5_h[:, i:i+window[0]] = slide.transpose((2, 0, 1))
-        return dst
-
-
     def make_sgy(self, path_hdf5=None, path_spec=None, postfix='',
                  remove_hdf5=False, zip_result=True, path_segy=None, pbar=False):
         """ Convert POST-STACK HDF5 cube to SEG-Y format with supplied spec.
@@ -115,7 +36,7 @@ class ExportMixin:
             path_hdf5 = os.path.join(os.path.dirname(self.path), 'temp.hdf5')
 
         with h5py.File(path_hdf5, 'r') as src:
-            cube_hdf5 = src['cube']
+            cube_hdf5 = src['cube_i']
 
             from .base import SeismicGeometry #pylint: disable=import-outside-toplevel
             geometry = SeismicGeometry(path_spec)
@@ -155,7 +76,6 @@ class ExportMixin:
             dir_name = os.path.dirname(os.path.abspath(path_segy))
             file_name = os.path.basename(path_segy)
             shutil.make_archive(os.path.splitext(path_segy)[0], 'zip', dir_name, file_name)
-
 
 def make_segy_from_array(array, path_segy, zip_segy=True, remove_segy=None, **kwargs):
     """ Make a segy-cube from an array. Zip it if needed. Segy-headers are filled by defaults/arguments from kwargs.

@@ -11,7 +11,6 @@ import gc
 from time import perf_counter
 from textwrap import indent
 from pprint import pformat
-from copy import copy
 from glob import glob
 
 import numpy as np
@@ -245,7 +244,7 @@ class HorizonController(BaseController):
 
         # Make spatial and height ranges
         if spatial_ranges is None:
-            spatial_ranges = [[0, item - 1] for item in geometry.cube_shape[:2]]
+            spatial_ranges = [None, None]
 
         if heights_range is None:
             bases = dataset.labels[0]
@@ -256,26 +255,18 @@ class HorizonController(BaseController):
             else:
                 heights_range = [0, geometry.depth]
 
-        # Update config according to the orientation
-        if orientation == 'i':
-            axis = 0
-            config.update({
-                'crop_shape_grid': config.crop_shape,
-                'orientation': 0,
-                'order': (0, 1, 2),
-            })
-        elif orientation == 'x':
-            axis = 1
-            config.update({
-                'crop_shape_grid': np.array(config.crop_shape)[[1, 0, 2]],
-                'orientation': 1,
-                'order': (1, 0, 2),
-            })
+        # Create grid
+        ranges = [*spatial_ranges, heights_range]
+        grid = RegularGrid(geometry=geometry,
+                           ranges=ranges,
+                           orientation=orientation,
+                           crop_shape=config.crop_shape,
+                           threshold=config.threshold,
+                           batch_size=config.batch_size,
+                           overlap_factor=config.overlap_factor)
 
         # Make iterator of chunks over given axis
-        chunk_iterator = range(spatial_ranges[axis][0],
-                               spatial_ranges[axis][1],
-                               int(chunk_size*(1 - chunk_overlap)))
+        chunk_iterator = grid.to_chunks(size=chunk_size, overlap=chunk_overlap)
 
         # Actual inference
         self.log(f'Starting {orientation}-inference with {len(chunk_iterator)} chunks')
@@ -286,20 +277,12 @@ class HorizonController(BaseController):
         chunk_iterator = notifier(chunk_iterator)
 
         horizons = []
-        n_crops, unfiltered_n_crops = 0, 0
-        for i, chunk in enumerate(chunk_iterator):
-            chunk_spatial_ranges = copy(spatial_ranges)
-            chunk_spatial_ranges[axis] = [chunk, min(chunk + chunk_size, spatial_ranges[axis][-1])]
-
-            horizons_, length, u_length = self._inference_on_chunk(dataset=dataset, model=model,
-                                                                   ranges=(*chunk_spatial_ranges, heights_range),
-                                                                   config=config, iteration=i)
+        for i, grid_chunk in enumerate(chunk_iterator):
+            horizons_ = self._inference_on_chunk(dataset=dataset, model=model, grid_chunk=grid_chunk,
+                                                 config=config, iteration=i)
             horizons.extend(horizons_)
 
-            n_crops += length
-            unfiltered_n_crops += u_length
-
-        self.log(f'Inferenced total of {n_crops} out of {unfiltered_n_crops} crops possible')
+        self.log(f'Inferenced total of {grid.length} out of {grid.unfiltered_length} crops possible')
 
         # Cleanup
         for item in dataset.geometries.values():
@@ -309,15 +292,13 @@ class HorizonController(BaseController):
 
         return Horizon.merge_list(horizons, mean_threshold=5.5, adjacency=3, minsize=500)
 
-    def _inference_on_chunk(self, dataset, model, ranges, config, iteration):
+    def _inference_on_chunk(self, dataset, model, grid_chunk, config, iteration):
         # Prepare parameters
-        orientation, overlap_factor, threshold = config.get(['orientation', 'overlap_factor', 'threshold'])
         prefetch = config.get('prefetch', 0)
-        crop_shape = np.array(config.crop_shape)[list(config.order)]
 
         if config.get('finetune', True):
-            sampler = self.make_sampler(dataset, ranges=ranges,)
-            if sampler.samplers[0][0].n > 0:
+            sampler = self.make_sampler(dataset, ranges=grid_chunk.ranges,)
+            if len(sampler) > 0:
                 sampler.show_locations(show=self.plot,
                                        savepath=self.make_savepath('chunk', str(iteration), 'sampler_locations.png'))
                 sampler.show_sampled(show=self.plot,
@@ -328,18 +309,10 @@ class HorizonController(BaseController):
 
         # Create regular grid over desired ranges
         geometry = dataset.geometries[0]
-        grid = RegularGrid(geometry=geometry,
-                           ranges=ranges,
-                           crop_shape=crop_shape,
-                           orientation=orientation,
-                           threshold=threshold,
-                           batch_size=config.batch_size,
-                           overlap_factor=overlap_factor)
-        config['grid'] = grid
+        config['grid'] = grid_chunk
 
         # Create grid over chunk ranges
-        accumulator = Accumulator3D.from_aggregation(aggregation='max', fill_value=0.0,
-                                                     shape=grid.shape, origin=grid.origin)
+        accumulator = Accumulator3D.from_grid(grid=grid_chunk, aggregation='max', fill_value=0.0)
         config['accumulator'] = accumulator
 
         # Create pipeline TODO: make better `add_model`
@@ -347,18 +320,18 @@ class HorizonController(BaseController):
         inference_pipeline.models.add_model('model', model)
 
         # Make predictions over chunk
-        inference_pipeline.run(n_iters=grid.n_iters, prefetch=prefetch)
+        inference_pipeline.run(n_iters=grid_chunk.n_iters, prefetch=prefetch)
         assembled_prediction = accumulator.aggregate()
 
         # Extract Horizon instances
         horizons = Horizon.from_mask(assembled_prediction,
-                                     geometry=geometry, shifts=grid.origin,
+                                     geometry=geometry, shifts=grid_chunk.origin,
                                      threshold=0.5, minsize=50)
         # Cleanup
         gc.collect()
         accumulator.clear()
         inference_pipeline.reset('variables')
-        return horizons, grid.length, grid.unfiltered_length
+        return horizons
 
     # Postprocess
     def postprocess(self, predictions, **kwargs):

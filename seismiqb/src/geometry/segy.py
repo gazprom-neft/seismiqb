@@ -500,7 +500,7 @@ class SeismicGeometrySEGY(SeismicGeometry):
             ranges = (-ranges, +ranges)
 
         if center:
-            ranges = tuple([item - self.v_mean for item in ranges])
+            ranges = tuple(item - self.v_mean for item in ranges)
 
         self.qnt_ranges = ranges
         self.qnt_bins = np.histogram_bin_edges(None, bins=254, range=ranges).astype(np.float)

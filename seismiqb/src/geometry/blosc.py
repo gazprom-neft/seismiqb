@@ -1,6 +1,7 @@
 """ Blosc sliced geometry. """
 #pylint: disable=unpacking-non-sequence
-from zipfile import ZipFile
+import os
+from zipfile import ZipFile, BadZipFile
 
 import dill
 import blosc
@@ -57,11 +58,54 @@ class BloscFile:
         #pylint: disable=consider-using-with
         self.zipfile = ZipFile(self.path, mode=self.mode)
 
+    def repack(self, aggregation=None):
+        """ Aggregate files with duplicate names. """
+        namelist = set(self.namelist())
+        infolist = self.zipfile.infolist()
+
+        path_out = self.path + '_temporal'
+        with BloscFile(path_out, mode='w') as out:
+            for key, dataset in self.key_to_dataset.items():
+                out.create_dataset(key, shape=dataset.shape, dtype=dataset.dtype)
+
+            for name in namelist:
+                infos = [info for info in infolist if info.filename == name]
+
+                # Get all versions of duplicates
+                slides = []
+                for info in infos:
+                    try:
+                        with self.zipfile.open(info, mode='r') as f:
+                            slide = self.load(f)
+                            slides.append(slide)
+                    except BadZipFile:
+                        pass
+
+                # Aggregate
+                if aggregation is None:
+                    slide = slides[0]
+                elif aggregation in ['max', 'maximum']:
+                    slide = np.maximum.reduce(slides)
+                elif aggregation in ['mean', 'average']:
+                    slide = np.mean(slides, axis=0)
+
+                # Write to new file
+                with out.zipfile.open(name, mode='w') as file:
+                    out.dump(slide, file)
+
+        os.remove(self.path)
+        os.rename(out.path, self.path)
+        return BloscFile(self.path, mode='r')
+
     # Utilities
     def namelist(self):
         """ Contents of the file. """
         namelist = self.zipfile.namelist()
         return [name for name in namelist if '_meta' not in name]
+
+    def __len__(self):
+        return len(self.zipfile.infolist())
+
 
     def __contains__(self, key):
         """ Check if projections is available. """
@@ -173,21 +217,30 @@ class BloscDataset:
     # Item management
     def __setitem__(self, key, slide):
         """ Save slide to a sub-directory. Number of slide is used as the filename. """
-        key = key if isinstance(key, int) else key[0]
+        key = key if isinstance(key, (int, slice)) else key[0]
+        if isinstance(key, slice):
+            for i, pos in enumerate(np.arange(self.shape[0])[key]):
+                self[int(pos)] = slide[i]
+        else: # int
+            with self.zipfile.open(f'{self.key}/{key}', mode='w') as file:
+                self.dump(slide, file)
 
-        with self.zipfile.open(f'{self.key}/{key}', mode='w') as file:
-            self.dump(slide, file)
 
     def __getitem__(self, key):
         """ Load the file, named as the number of a slide. """
-        key = key if isinstance(key, int) else key[0]
+        key = key if isinstance(key, (int, slice)) else key[0]
+        if isinstance(key, slice):
+            array = []
+            for i in np.arange(self.shape[0])[key]:
+                array.append(self[int(i)])
+            return np.stack(array, axis=0)
+
         for _ in range(self.RETRIES):
             # In a multi-processing setting, the ZipFile can be (somehow) closed from other process
             # We can mitigate that by re-opening the handler, if needed.
             try:
                 with self.zipfile.open(f'{self.key}/{key}', mode='r') as file:
                     slide = self.load(file)
-                break
             except ValueError:
                 self.parent.open_handler()
         return slide

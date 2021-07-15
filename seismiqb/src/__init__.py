@@ -5,7 +5,7 @@ from .cubeset import SeismicCubeset
 from .crop_batch import SeismicCropBatch
 
 # Data entities
-from .geometry import SeismicGeometry
+from .geometry import SeismicGeometry, BloscFile
 from .horizon import StructuredHorizon, Horizon
 from .horizon_unstructured import UnstructuredHorizon
 from .geobody import GeoBody

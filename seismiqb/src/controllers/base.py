@@ -88,9 +88,10 @@ class BaseController:
         'evaluate': {}
     })
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, **kwargs):
         self.config = Config(self.DEFAULTS)
         self.config += config or {}
+        self.config += kwargs
 
         self.monitor = self.config.monitor
         self.plot = self.config.plot
@@ -164,6 +165,14 @@ class BaseController:
         """ Create dataset to train/inference on. Must be implemented in inherited classes. """
         _ = kwargs
 
+    def make_notifier(self):
+        """ Create notifier. """
+        return {
+            'bar': self.config.bar,
+            'monitors': 'loss_history',
+            'file': self.make_savepath('末 model_loss.log'),
+        }
+
     # Train
     def train(self, dataset, sampler, config=None, **kwargs):
         """ Train model on a provided dataset.
@@ -178,11 +187,7 @@ class BaseController:
         pipeline_config = Config({**self.config['common'], **self.config['train'], **config, **kwargs})
         n_iters, prefetch, rescale = pipeline_config.pop(['n_iters', 'prefetch', 'rescale_batch_size'])
 
-        notifier = {
-            'bar': self.config.bar,
-            'monitors': 'loss_history',
-            'file': self.make_savepath('末 model_loss.log'),
-        }
+        notifier = self.make_notifier() if self.config['bar'] else None
         self.log(f'Train started on device={self.gpu_list}')
 
         # Start resource tracking

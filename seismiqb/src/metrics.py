@@ -1090,3 +1090,59 @@ class GeometryMetrics(BaseMetrics):
             **kwargs
         }
         return metric, plot_dict
+
+class FaultsMetrics:
+    """ Faults metric class. """
+    SHIFTS = [-20, -15, -5, 5, 15, 20]
+
+    def similarity_metric(self, semblance, masks, threshold=None):
+        """ Compute similarity metric for faults mask. """
+        if threshold:
+            masks = masks > threshold
+        if semblance.ndim == 2:
+            semblance = np.expand_dims(semblance, axis=0)
+        if semblance.ndim == 3:
+            semblance = np.expand_dims(semblance, axis=0)
+
+        if masks.ndim == 2:
+            masks = np.expand_dims(masks, axis=0)
+        if masks.ndim == 3:
+            masks = np.expand_dims(masks, axis=0)
+
+        res = []
+        m = self.sum_with_axes(masks * (1 - semblance), axes=[1,2,3])
+        weights = np.ones((len(self.SHIFTS), 1))
+        weights = weights / weights.sum()
+        for i in self.SHIFTS:
+            random_mask = self.make_shift(masks, shift=i)
+            rm = self.sum_with_axes(random_mask * (1 - semblance), axes=[1,2,3])
+            ratio = m/rm
+            res += [np.log(ratio)]
+        res = np.stack(res, axis=0)
+        res = (res * weights).sum(axis=0)
+        res = np.clip(res, -2, 2)
+        return res
+
+    def sum_with_axes(self, array, axes=None):
+        """ Sum for several axes. """
+        if axes is None:
+            return array.sum()
+        if isinstance(axes, int):
+            axes = [axes]
+        res = array
+        axes = sorted(axes)
+        for i, axis in enumerate(axes):
+            res = res.sum(axis=axis-i)
+        return res
+
+    def make_shift(self, array, shift=20):
+        """ Make shifts for mask. """
+        result = np.zeros_like(array)
+        for i, _array in enumerate(array):
+            if shift > 0:
+                result[i][:, shift:] = _array[:, :-shift]
+            elif shift < 0:
+                result[i][:, :shift] = _array[:, -shift:]
+            else:
+                result[i] = _array
+        return result

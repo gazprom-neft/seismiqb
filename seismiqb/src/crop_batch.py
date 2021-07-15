@@ -653,7 +653,7 @@ class SeismicCropBatch(Batch):
     # Predictions
     @action
     @inbatch_parallel(init='indices', post=None, target='for')
-    def update_accumulator(self, ix, src, accumulator, order=(0, 1, 2)):
+    def update_accumulator(self, ix, src, accumulator):
         """ Update accumulator with data from crops.
         Allows to gradually accumulate predicitons in a single instance, instead of
         keeping all of them and assembling later.
@@ -1092,7 +1092,7 @@ class SeismicCropBatch(Batch):
         if (shape > crop_shape).any():
             raise ValueError(f"shape can't be large then crop shape ({crop_shape}) but {shape} was given.")
         corner = crop_shape // 2 - shape // 2
-        slices = tuple([slice(start, start+length) for start, length in zip(corner, shape)])
+        slices = tuple(slice(start, start+length) for start, length in zip(corner, shape))
         return crop[slices]
 
     @apply_parallel
@@ -1161,12 +1161,14 @@ class SeismicCropBatch(Batch):
 
         # Get location
         l = self.locations[idx]
+        cube_name = self.unsalt(self.indices[idx])
         if (l[0].stop - l[0].start) == 1:
             suptitle = f'INLINE {l[0].start}   CROSSLINES {l[1].start}:{l[1].stop}   DEPTH {l[2].start}:{l[2].stop}'
         elif (l[1].stop - l[1].start) == 1:
             suptitle = f'CROSSLINE {l[1].start}   INLINES {l[0].start}:{l[0].stop}   DEPTH {l[2].start}:{l[2].stop}'
         else:
             suptitle = f'DEPTH {l[2].start}  INLINES {l[0].start}:{l[0].stop}   CROSSLINES {l[1].start}:{l[1].stop}'
+        suptitle = f'batch item {idx}                  {cube_name}\n{suptitle}'
 
         # Plot parameters
         kwargs = {
@@ -1180,3 +1182,15 @@ class SeismicCropBatch(Batch):
             **kwargs
         }
         return plot_image(data, **kwargs)
+
+
+    def show(self, n=1, separate=True, components=None, **kwargs):
+        """ Plot `n` random batch items. """
+        available_components = components or ['images', 'masks', 'predictions']
+        available_components = [compo for compo in available_components
+                                if hasattr(self, compo)]
+
+        n = min(n, len(self))
+
+        for idx in self.random.choice(len(self), size=n, replace=False):
+            self.plot_components(*available_components, idx=idx, separate=separate, **kwargs)
