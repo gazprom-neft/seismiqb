@@ -677,7 +677,7 @@ class SeismicGeometry(ExportMixin):
             'ylabel': 'density',
             **kwargs
         }
-        return plot_image(data, backend='matplotlib', bins=bins, mode='histogram', **kwargs)
+        return plot_image(data, backend='matplotlib', bins=bins, mode='hist', **kwargs)
 
     def show_slide(self, loc=None, start=None, end=None, step=1, axis=0, zoom_slice=None, stable=True, **kwargs):
         """ Show seismic slide in desired place.

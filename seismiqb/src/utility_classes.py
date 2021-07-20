@@ -502,6 +502,9 @@ class AccumulatorBlosc(Accumulator3D):
     def __init__(self, path, orientation=0, aggregation='max',
                  shape=None, origin=None, dtype=np.float32, transform=None, **kwargs):
         super().__init__(shape=shape, origin=origin, dtype=dtype, transform=transform, path=None)
+        if orientation == 2:
+            raise ValueError("Can't use BLOSC accumulator for a joined grid with mixed orientations!")
+
         self.type = 'blosc'
         self.path = path
         self.orientation = orientation

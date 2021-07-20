@@ -745,7 +745,8 @@ class SeismicSampler(Sampler):
 
 class BaseGrid:
     """ Determenistic generator of crop locations. """
-    def __init__(self, crop_shape, batch_size=64, locations=None, geometry=None):
+    def __init__(self, crop_shape=None, batch_size=64,
+                 locations=None, orientation=None, origin=None, endpoint=None, geometry=None):
         self._iterator = None
         self.crop_shape = np.array(crop_shape)
         self.batch_size = batch_size
@@ -754,6 +755,10 @@ class BaseGrid:
             self._make_locations()
         else:
             self.locations = locations
+            self.orientation = orientation
+            self.origin = origin
+            self.endpoint = endpoint
+            self.shape = endpoint - origin
             self.geometry = geometry
             self.name = geometry.short_name
 
@@ -810,7 +815,21 @@ class BaseGrid:
         locations = np.concatenate([self.locations, other.locations], axis=0)
         locations = np.unique(locations, axis=0)
         batch_size = min(self.batch_size, other.batch_size)
-        return BaseGrid(locations=locations, batch_size=batch_size, geometry=self.geometry)
+
+        if self.orientation == other.orientation:
+            orientation = self.orientation
+        else:
+            orientation = 2
+
+        self_origin = self.origin if isinstance(self, RegularGrid) else self.actual_origin
+        other_origin = other.origin if isinstance(other, RegularGrid) else other.actual_origin
+        origin = np.minimum(self_origin, other_origin)
+
+        self_endpoint = self.endpoint if isinstance(self, RegularGrid) else self.actual_endpoint
+        other_endpoint = other.endpoint if isinstance(other, RegularGrid) else other.actual_endpoint
+        endpoint = np.maximum(self_endpoint, other_endpoint)
+        return BaseGrid(locations=locations, batch_size=batch_size, orientation=orientation,
+                        origin=origin, endpoint=endpoint, geometry=self.geometry)
 
     def __add__(self, other):
         return self.join(other)
@@ -943,9 +962,6 @@ class RegularGrid(BaseGrid):
         # Make ranges
         ranges = [item if item is not None else [0, c] for item, c in zip(ranges, geometry.cube_shape)]
         ranges = np.array(ranges)
-
-        if (ranges[:, 0] < 0).any() or (ranges[:, 1] > geometry.cube_shape).any():
-            raise ValueError('Grid ranges must contain in the geometry!')
         self.ranges = ranges
 
         # Infer from `ranges`
