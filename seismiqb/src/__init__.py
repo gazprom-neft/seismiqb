@@ -10,6 +10,7 @@ from .horizon import StructuredHorizon, Horizon
 from .horizon_unstructured import UnstructuredHorizon
 from .geobody import GeoBody
 from .fault import Fault
+from .facies import FaciesInfo, FaciesCubeset, Facies
 from .metrics import HorizonMetrics, GeometryMetrics
 from .samplers import GeometrySampler, HorizonSampler, SeismicSampler, BaseGrid, RegularGrid, ExtensionGrid
 

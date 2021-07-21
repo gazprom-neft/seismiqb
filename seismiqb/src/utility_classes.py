@@ -561,7 +561,7 @@ class IndexedDict(OrderedDict):
     def flatten(self, keys=None):
         """ Get dict values for requested keys in a single list. """
         keys = to_list(keys) if keys is not None else list(self.keys())
-        lists = [to_list(self[key]) for key in keys]
+        lists = [self[key] if isinstance(self[key], list) else [self[key]] for key in keys]
         return sum(lists, [])
 
     @property
